@@ -1798,3 +1798,603 @@
         };
       }
       var XHR = window.XMLHttpRequest;
+      if (XHR && XHR.prototype) {
+        var originalOpen = XHR.prototype.open;
+        var originalSend = XHR.prototype.send;
+        XHR.prototype.open = function () {
+          return originalOpen.apply(this, arguments);
+        };
+        XHR.prototype.send = function () {
+          var xhr = this;
+          xhr.addEventListener('load', function () {
+            try {
+              var text = xhr.responseText;
+              if (text && text.indexOf('"skuBase"') >= 0) captureAliExpressText(text);
+            } catch (e) {}
+          });
+          return originalSend.apply(this, arguments);
+        };
+      }
+    } catch (e) {}
+  }
+
+  function aliexpressDomPrice() {
+    var el = document.querySelector('[class*="price-default--current"], [class*="price--current"]');
+    if (!el) return null;
+    return parsePriceNumber(el.textContent);
+  }
+
+  function aliexpressImageUrl(src) {
+    var text = String(src || '');
+    if (!text) return null;
+    text = text.replace(/_?\.(avif|webp)$/i, '');
+    return text.replace(/_\d+x\d+(?=q\d+)/, '_960x960');
+  }
+
+  function aliexpressDomImages() {
+    var groups = [
+      '[class*="magnifier--image"]',
+      '[class*="slider--item"] img, [class*="slider--img"] img',
+      '[class*="image-view"] img',
+      'img[src*="aliexpress-media"]',
+      'img[src*="alicdn"]'
+    ];
+    var out = [];
+    for (var g = 0; g < groups.length && out.length < 6; g++) {
+      var imgs = document.querySelectorAll(groups[g]);
+      for (var i = 0; i < imgs.length && out.length < 6; i++) {
+        var src = '';
+        if (imgs[i].getAttribute) {
+          src = imgs[i].getAttribute('data-src') || imgs[i].getAttribute('data-lazy-src') || '';
+          if (!src) {
+            var srcset = imgs[i].getAttribute('srcset');
+            if (srcset) {
+              var parts = String(srcset).split(',');
+              src = String(parts[parts.length - 1] || '').trim().split(' ')[0];
+            }
+          }
+        }
+        if (!src) src = imgs[i].src || '';
+        var url = aliexpressImageUrl(src);
+        if (url && out.indexOf(url) < 0) out.push(url);
+      }
+    }
+    return out;
+  }
+
+  function aliexpressDomImage() {
+    var images = aliexpressDomImages();
+    return images.length ? images[0] : null;
+  }
+
+  function aliexpressDomAvailability() {
+    var info = document.querySelector('[class*="quantity--info"]');
+    if (info) {
+      var match = String(info.textContent || '').match(/(\d[\d,]*)\s*available/i);
+      if (match) return parseInt(match[1].replace(/,/g, ''), 10) > 0;
+    }
+    var buy = document.querySelector('[class*="add-to-cart"], [class*="buy-now"]');
+    if (buy) {
+      var cls = String(buy.className || '');
+      if (/disabled/i.test(cls)) return false;
+      return true;
+    }
+    return !domSoldOut();
+  }
+
+  function aliexpressDomVariants(props, price, available, name) {
+    var variants = [];
+    if (!props.length) return variants;
+    var combos = [[]];
+    for (var i = 0; i < props.length && i < 3; i++) {
+      var values = props[i].values.length ? props[i].values : [props[i].selected || ''];
+      var next = [];
+      for (var c = 0; c < combos.length; c++) {
+        for (var v = 0; v < values.length; v++) {
+          next.push(combos[c].concat([values[v]]));
+          if (next.length >= 200) break;
+        }
+        if (next.length >= 200) break;
+      }
+      combos = next;
+    }
+    for (var k = 0; k < combos.length; k++) {
+      var combo = combos[k];
+      variants.push({
+        id: 'dom-' + k,
+        title: combo.filter(Boolean).join(' / ') || name,
+        option1: combo[0] || null,
+        option2: combo[1] || null,
+        option3: combo[2] || null,
+        price: Math.round(price * 100),
+        compare_at_price: null,
+        available: available,
+        sku: null
+      });
+    }
+    return variants;
+  }
+
+  function collectAliExpress() {
+    var captured = getCapturedAliExpressData();
+    var raw = captured || findEmbeddedJson(['runParams', '_d_c_', '__INIT_DATA__', '__AER_DATA__']);
+    var data = captured ? captured : aliexpressData(raw);
+    var skuBase = aliexpressSkuBase(data);
+    var name = (data.titleModule && (data.titleModule.subject || data.titleModule.title)) ||
+      metaContent('meta[property="og:title"]') || domText('h1[data-pl="product-title"]') ||
+      domText('h1') || document.title;
+    var image = null;
+    if (data.imageModule) {
+      var imageList = data.imageModule.imagePathList || data.imageModule.imageList;
+      if (Array.isArray(imageList) && imageList.length) {
+        var first = imageList[0];
+        image = typeof first === 'string' ? first : (first.imgUrl || first.url || null);
+      }
+    }
+    if (!image) image = metaContent('meta[property="og:image"]') || null;
+    if (!image) image = aliexpressDomImage();
+    if (image && image.indexOf('//') === 0) image = 'https:' + image;
+    var currency = (data.priceModule && data.priceModule.currencyCode) || '';
+    var basePrice = null;
+    if (data.priceModule) {
+      var minAmount = data.priceModule.minActivityAmount || data.priceModule.minAmount;
+      if (minAmount && minAmount.value != null) basePrice = parseFloat(minAmount.value);
+    }
+    if (basePrice == null || isNaN(basePrice)) basePrice = domPriceNumber();
+    var propNames = [];
+    var propOptions = [];
+    for (var pn = 0; pn < skuBase.props.length && pn < 3; pn++) {
+      var propName = skuBase.props[pn].name || ('Option ' + (pn + 1));
+      propNames.push(propName);
+      propOptions.push({ name: propName });
+    }
+    var variants = [];
+    for (var i = 0; i < skuBase.skus.length && variants.length < 200; i++) {
+      var sku = skuBase.skus[i] || {};
+      var skuVal = sku.skuVal || {};
+      var price = null;
+      if (skuVal.skuActivityAmount && skuVal.skuActivityAmount.value != null) price = parseFloat(skuVal.skuActivityAmount.value);
+      else if (skuVal.skuAmount && skuVal.skuAmount.value != null) price = parseFloat(skuVal.skuAmount.value);
+      else if (skuVal.skuCalPrice != null) price = parseFloat(skuVal.skuCalPrice);
+      if (price == null || isNaN(price)) price = basePrice;
+      var values = aliexpressVariantOptions(sku.skuAttr, skuBase.props);
+      var byProp = {};
+      for (var vi = 0; vi < values.length; vi++) byProp[values[vi].name] = values[vi].value;
+      var optionValues = [];
+      for (var pi = 0; pi < propNames.length; pi++) optionValues.push(byProp[propNames[pi]] || null);
+      var quantity = skuVal.availQuantity != null ? Number(skuVal.availQuantity) :
+        (skuVal.inventory != null ? Number(skuVal.inventory) : null);
+      variants.push({
+        id: sku.skuId || ('sku-' + i),
+        title: optionValues.filter(Boolean).join(' / ') || name,
+        option1: optionValues[0] || null,
+        option2: optionValues[1] || null,
+        option3: optionValues[2] || null,
+        price: Math.round((price || 0) * 100),
+        compare_at_price: null,
+        available: aliexpressAvailability(quantity),
+        sku: sku.skuId || null
+      });
+    }
+    if (!variants.length) {
+      var domProps = aliexpressDomProperties();
+      var domAvailable = aliexpressDomAvailability();
+      var domPrice = aliexpressDomPrice();
+      if (domPrice != null) basePrice = domPrice;
+      if (basePrice == null || isNaN(basePrice)) basePrice = domPriceNumber();
+      if (basePrice == null || isNaN(basePrice)) return Promise.reject(new Error('could not read AliExpress price'));
+      if (domProps.length) {
+        variants = aliexpressDomVariants(domProps, basePrice, domAvailable, name);
+        propOptions = [];
+        for (var dp = 0; dp < domProps.length && dp < 3; dp++) propOptions.push({ name: domProps[dp].name });
+      } else {
+        variants.push({
+          id: 'base',
+          title: name,
+          option1: null,
+          option2: null,
+          option3: null,
+          price: Math.round(basePrice * 100),
+          compare_at_price: null,
+          available: domAvailable,
+          sku: null
+        });
+      }
+    }
+    if (!currency) currency = detectCurrency();
+    var domImages = aliexpressDomImages();
+    var apiImages = getCapturedAliExpressImages();
+    for (var ai = 0; ai < apiImages.length; ai++) {
+      if (domImages.indexOf(apiImages[ai]) < 0) domImages.push(apiImages[ai]);
+    }
+    if (!image && domImages.length) image = domImages[0];
+    updateDebugAttribute();
+    var match = String(location.pathname).match(/\/(?:item|i)\/(\d+)/);
+    var handle = match ? match[1] : currentPageId();
+    return Promise.resolve(normalize({
+      title: name,
+      type: null,
+      vendor: null,
+      description: '',
+      image: image,
+      images: domImages,
+      options: propOptions,
+      variants: variants
+    }, handle, currency));
+  }
+
+  registerAdapter({
+    id: 'aliexpress',
+    label: 'AliExpress item pages',
+    matches: function () {
+      var host = location.hostname || '';
+      return (/(^|\.)aliexpress\.com$/.test(host) || /(^|\.)aliexpress\.us$/.test(host)) &&
+        /\/(?:item|i)\/\d+/.test(location.pathname || '');
+    },
+    collect: collectAliExpress
+  });
+
+  function collectProduct() {
+    var adapter = adapterFor(location.href);
+    if (!adapter) return Promise.reject(new Error('unsupported site'));
+    return adapter.collect();
+  }
+
+  function toTsv(products) {
+    var header = [
+      'Name', 'Piece', 'Color', 'Size', 'Price', 'Currency', 'In stock',
+      'SKU', 'Brand', 'Product code', 'URL', 'Saved at'
+    ];
+    var rows = [header];
+    for (var i = 0; i < products.length; i++) {
+      var p = products[i];
+      for (var j = 0; j < p.variants.length; j++) {
+        var v = p.variants[j];
+        rows.push([
+          p.name,
+          v.piece == null ? '' : v.piece,
+          v.color == null ? '' : v.color,
+          v.size == null ? '' : v.size,
+          v.price.toFixed(2),
+          p.currency,
+          v.available ? 'yes' : 'no',
+          v.sku == null ? '' : v.sku,
+          p.brand == null ? '' : p.brand,
+          p.productCode == null ? '' : p.productCode,
+          v.url,
+          p.savedAt == null ? '' : p.savedAt
+        ]);
+      }
+    }
+    var lines = [];
+    for (var r = 0; r < rows.length; r++) {
+      var cells = [];
+      for (var c = 0; c < rows[r].length; c++) {
+        cells.push(String(rows[r][c]).replace(/[\t\r\n]+/g, ' '));
+      }
+      lines.push(cells.join('\t'));
+    }
+    return lines.join('\n');
+  }
+
+  function bundleLabel(v) {
+    var texts = variantPieceTexts(v);
+    var raw = texts.length ? texts[0] : (v.variantTitle || 'Set');
+    var cleaned = String(raw).replace(/\([^()]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+    return titleCase(cleaned || 'Set');
+  }
+
+  function bundlePieceMap(pieces) {
+    var map = {};
+    for (var i = 0; i < pieces.length; i++) {
+      if (!pieces[i].canonical || map[pieces[i].name]) continue;
+      map[pieces[i].name] = { color: pieces[i].color || null };
+    }
+    return map;
+  }
+
+  function bundleColor(pieces) {
+    var colors = [];
+    for (var i = 0; i < pieces.length; i++) {
+      if (pieces[i].color && colors.indexOf(pieces[i].color) < 0) colors.push(pieces[i].color);
+    }
+    return colors.join('/') || null;
+  }
+
+  function makeSetRow(p, data) {
+    var priceRange = variantPriceRange(p);
+    return {
+      name: p.name,
+      handle: p.handle || null,
+      source: p.source || null,
+      priceMin: priceRange.min,
+      priceMax: priceRange.max,
+      historyCount: p.history && p.history.length ? p.history.length : 0,
+      brand: p.brand || null,
+      productCode: p.productCode || null,
+      currency: p.currency || '',
+      url: p.url || null,
+      savedAt: p.savedAt || null,
+      type: data.type,
+      set: data.set || null,
+      color: data.color || null,
+      pieces: data.pieces || {},
+      total: Math.round((Number(data.total) || 0) * 100) / 100,
+      available: !!data.available,
+      complete: !!data.complete,
+      missing: data.missing || []
+    };
+  }
+
+  function buildSetRows(products) {
+    var rows = [];
+    for (var i = 0; i < products.length; i++) {
+      var product = products[i];
+      var variants = product.variants || [];
+      var bundleOrder = [];
+      var bundles = {};
+      var colorOrder = [];
+      var groups = {};
+      var typeOrder = [];
+      var canonicalTypes = {};
+      for (var j = 0; j < variants.length; j++) {
+        var variant = variants[j];
+        var parts = variantPieces(variant);
+        if (parts.bundle) {
+          var signature = variantSignature(variant) + '|' + (variant.color || '');
+          if (!bundles[signature]) {
+            bundles[signature] = {
+              label: bundleLabel(variant),
+              color: variant.color || bundleColor(parts.pieces) || '',
+              pieces: parts.pieces,
+              variants: []
+            };
+            bundleOrder.push(signature);
+          }
+          bundles[signature].variants.push(variant);
+          continue;
+        }
+        var type = parts.pieces.length ? parts.pieces[0].name : (normalizePieceName(product.type) || 'Item');
+        var canonical = parts.pieces.length ? parts.pieces[0].canonical : false;
+        var colorKey = variant.color || 'Any';
+        if (!groups[colorKey]) {
+          groups[colorKey] = { color: colorKey === 'Any' ? '' : colorKey, best: {}, types: [] };
+          colorOrder.push(colorKey);
+        }
+        if (groups[colorKey].types.indexOf(type) < 0) groups[colorKey].types.push(type);
+        if (typeOrder.indexOf(type) < 0) typeOrder.push(type);
+        if (canonical) canonicalTypes[type] = true;
+        var current = groups[colorKey].best[type];
+        if (!current || betterVariant(variant, current)) groups[colorKey].best[type] = variant;
+      }
+
+      for (var b = 0; b < bundleOrder.length; b++) {
+        var bundle = bundles[bundleOrder[b]];
+        var bestBundle = null;
+        for (var v1 = 0; v1 < bundle.variants.length; v1++) {
+          if (!bestBundle || betterVariant(bundle.variants[v1], bestBundle)) bestBundle = bundle.variants[v1];
+        }
+        rows.push(makeSetRow(product, {
+          type: 'bundle',
+          set: bundle.label,
+          color: bundle.color,
+          pieces: bundlePieceMap(bundle.pieces),
+          total: bestBundle.price,
+          available: bestBundle.available,
+          complete: true,
+          missing: []
+        }));
+      }
+
+      var canonicalCount = 0;
+      for (var t = 0; t < typeOrder.length; t++) {
+        if (canonicalTypes[typeOrder[t]]) canonicalCount++;
+      }
+      var groupedSet = canonicalCount >= 2;
+
+      for (var c = 0; c < colorOrder.length; c++) {
+        var group = groups[colorOrder[c]];
+        var pieces = {};
+        var total = 0;
+        var available = true;
+        if (groupedSet) {
+          for (var p1 = 0; p1 < group.types.length; p1++) {
+            var name = group.types[p1];
+            var chosen = group.best[name];
+            if (!chosen) continue;
+            pieces[name] = {
+              price: chosen.price,
+              available: !!chosen.available,
+              color: chosen.color || null,
+              sku: chosen.sku || null,
+              title: chosen.variantTitle || null,
+              url: chosen.url || null
+            };
+            total += Number(chosen.price) || 0;
+            if (!chosen.available) available = false;
+          }
+        } else {
+          var bestName = null;
+          var bestPick = null;
+          for (var candidate in group.best) {
+            if (!hasOwn(group.best, candidate)) continue;
+            if (!bestPick || betterVariant(group.best[candidate], bestPick)) {
+              bestPick = group.best[candidate];
+              bestName = candidate;
+            }
+          }
+          if (bestPick) {
+            pieces[bestName] = {
+              price: bestPick.price,
+              available: !!bestPick.available,
+              color: bestPick.color || null,
+              sku: bestPick.sku || null,
+              title: bestPick.variantTitle || null,
+              url: bestPick.url || null
+            };
+            total = Number(bestPick.price) || 0;
+            available = !!bestPick.available;
+          }
+        }
+        var missing = [];
+        if (groupedSet) {
+          for (var m = 0; m < typeOrder.length; m++) {
+            if (!pieces[typeOrder[m]]) missing.push(typeOrder[m]);
+          }
+        }
+        rows.push(makeSetRow(product, {
+          type: groupedSet ? 'set' : 'item',
+          set: null,
+          color: group.color,
+          pieces: pieces,
+          total: total,
+          available: available,
+          complete: groupedSet ? missing.length === 0 : true,
+          missing: missing
+        }));
+      }
+    }
+    return rows;
+  }
+
+  function setMatrix(products) {
+    return matrixFromRows(buildSetRows(products));
+  }
+
+  function matrixFromRows(sets) {
+    var canonicalNames = {};
+    for (var k = 0; k < PIECE_KEYWORDS.length; k++) canonicalNames[PIECE_KEYWORDS[k][1]] = true;
+    var usage = {};
+    var setUsage = {};
+    for (var u = 0; u < sets.length; u++) {
+      for (var used in sets[u].pieces) {
+        if (!hasOwn(sets[u].pieces, used)) continue;
+        usage[used] = (usage[used] || 0) + 1;
+        if (sets[u].type === 'set') setUsage[used] = true;
+      }
+    }
+    var columns = [];
+    for (var i = 0; i < sets.length; i++) {
+      for (var name in sets[i].pieces) {
+        if (!hasOwn(sets[i].pieces, name) || columns.indexOf(name) >= 0) continue;
+        if (!canonicalNames[name]) {
+          if (!setUsage[name] || usage[name] < 2 || name.length > 40 || /^\s*-| - /.test(name)) continue;
+        }
+        columns.push(name);
+      }
+    }
+    var header = ['Product', 'Source', 'Type', 'Set name', 'Color', 'Included pieces'];
+    header = header.concat(columns);
+    header = header.concat(['Total', 'Currency', 'In stock', 'Complete', 'Missing', 'Liked at', 'Sets', 'Brand', 'Product code', 'URL', 'Saved at']);
+    var typeLabels = { set: 'Set', bundle: 'Bundle', item: 'Item' };
+    var priority = loadPriority();
+    var collections = loadCollections();
+    var setsByItem = {};
+    for (var col = 0; col < collections.length; col++) {
+      var collectionItems = Array.isArray(collections[col].items) ? collections[col].items : [];
+      for (var ci = 0; ci < collectionItems.length; ci++) {
+        if (!setsByItem[collectionItems[ci]]) setsByItem[collectionItems[ci]] = [];
+        setsByItem[collectionItems[ci]].push(collections[col].name);
+      }
+    }
+    var rows = [];
+    for (var r = 0; r < sets.length; r++) {
+      var row = sets[r];
+      var included = [];
+      for (var piece in row.pieces) {
+        if (hasOwn(row.pieces, piece)) included.push(piece);
+      }
+      var cells = [
+        row.name,
+        row.source || '42lolita.com',
+        typeLabels[row.type] || row.type,
+        row.set == null ? '' : row.set,
+        row.color == null ? '' : row.color,
+        included.join(', ')
+      ];
+      for (var c = 0; c < columns.length; c++) {
+        var entry = row.pieces[columns[c]];
+        cells.push(entry && entry.price != null ? Number(entry.price).toFixed(2) : '');
+      }
+      var likedStamp = Number(priority[recordItemKey(row)] || 0);
+      cells.push(
+        row.total.toFixed(2),
+        row.currency,
+        row.available ? 'yes' : 'no',
+        row.complete ? 'yes' : 'no',
+        row.missing.join(', '),
+        likedStamp > 0 ? new Date(likedStamp).toISOString() : '',
+        (setsByItem[recordItemKey(row)] || []).join(', '),
+        row.brand == null ? '' : row.brand,
+        row.productCode == null ? '' : row.productCode,
+        row.url == null ? '' : row.url,
+        row.savedAt == null ? '' : row.savedAt
+      );
+      rows.push(cells);
+    }
+    return { header: header, rows: rows, sets: sets };
+  }
+
+  function rowsToTsv(header, rows) {
+    var all = [header].concat(rows);
+    var lines = [];
+    for (var r = 0; r < all.length; r++) {
+      var cells = [];
+      for (var c = 0; c < all[r].length; c++) {
+        cells.push(String(all[r][c] == null ? '' : all[r][c]).replace(/[\t\r\n]+/g, ' '));
+      }
+      lines.push(cells.join('\t'));
+    }
+    return lines.join('\n');
+  }
+
+  function toSetTsv(products) {
+    var matrix = setMatrix(products);
+    return rowsToTsv(matrix.header, matrix.rows);
+  }
+
+  function csvCell(value) {
+    var text = String(value == null ? '' : value);
+    if (/[",\r\n]/.test(text)) text = '"' + text.replace(/"/g, '""') + '"';
+    return text;
+  }
+
+  function toCsv(header, rows) {
+    var all = [header].concat(rows);
+    var lines = [];
+    for (var r = 0; r < all.length; r++) {
+      var cells = [];
+      for (var c = 0; c < all[r].length; c++) cells.push(csvCell(all[r][c]));
+      lines.push(cells.join(','));
+    }
+    return '\ufeff' + lines.join('\r\n') + '\r\n';
+  }
+
+  function downloadSetsCsv(products) {
+    var stamp = new Date().toISOString().slice(0, 10);
+    var matrix = setMatrix(products);
+    return download('shoplita-set-prices-' + stamp + '.csv', toCsv(matrix.header, matrix.rows), 'text/csv;charset=utf-8');
+  }
+
+  function latestSnapshots(products) {
+    return dedupeList(products);
+  }
+
+  function betterSummaryRow(a, b) {
+    var scoreA = (a.complete ? 0 : 2) + (a.available ? 0 : 1);
+    var scoreB = (b.complete ? 0 : 2) + (b.available ? 0 : 1);
+    if (scoreA !== scoreB) return scoreA < scoreB;
+    return Number(a.total) < Number(b.total);
+  }
+
+  function buildSummaryRows(products) {
+    var rows = buildSetRows(latestSnapshots(products));
+    var groups = {};
+    var order = [];
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      var key = (row.handle || row.name || '') + '|' + (row.color || '');
+      if (!groups[key]) {
+        groups[key] = row;
+        order.push(key);
+      } else if (betterSummaryRow(row, groups[key])) {
