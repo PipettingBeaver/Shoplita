@@ -1,0 +1,600 @@
+// ==UserScript==
+// @name         Shoplita
+// @namespace    shoplita
+// @version      2.13.0
+// @description  Saves prices and pieces from lolita shops (42Lolita, Devilinspired, My-Lolita-Dress, AliExpress and other pages) into one wishlist. Keeps dated snapshots, computes coordinated set totals, ranks favourites, marks availability, organizes items into named sets and saves mix-and-match outfits, exports/imports JSON, TSV, Excel-ready CSV and Shoplita share files, and compares items, sets and outfits with searchable pickers, images and live totals in a minimizable panel.
+// @author       tan
+// @match        https://42lolita.com/*
+// @match        https://www.42lolita.com/*
+// @match        https://devilinspired.com/*
+// @match        https://www.devilinspired.com/*
+// @match        https://my-lolita-dress.com/*
+// @match        https://www.my-lolita-dress.com/*
+// @match        https://*.aliexpress.com/*
+// @match        https://*.aliexpress.us/*
+// @grant        GM_setClipboard
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @inject-into  content
+// @run-at       document-start
+// @noframes
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  var STORAGE_KEY = 'shoplita.savedInfo.v1';
+  var PRIORITY_KEY = 'shoplita.priority.v1';
+  var UNAVAILABLE_KEY = 'shoplita.unavailable.v1';
+  var COMPARE_KEY = 'shoplita.compare.v1';
+  var UI_KEY = 'shoplita.ui.v1';
+  var COLLECTIONS_KEY = 'shoplita.collections.v1';
+  var OUTFITS_KEY = 'shoplita.outfits.v1';
+
+  var COLOR_WORDS = [
+    'royal blue', 'sky blue', 'light blue', 'dark blue', 'navy blue', 'baby blue', 'powder blue',
+    'wine red', 'dark red', 'light pink', 'hot pink', 'baby pink', 'rose pink', 'off white', 'off-white',
+    'ivory white', 'dark green', 'light green', 'mint green', 'army green', 'dark brown', 'light brown',
+    'grey blue', 'gray blue', 'champagne gold', 'rose gold', 'dark purple', 'light purple',
+    'wine', 'burgundy', 'maroon', 'navy', 'blue', 'pink', 'black', 'white', 'red', 'green', 'purple',
+    'yellow', 'brown', 'grey', 'gray', 'beige', 'apricot', 'lavender', 'mint', 'teal', 'orange', 'gold',
+    'silver', 'rose', 'ivory', 'khaki', 'coffee', 'sakura', 'peach', 'cream', 'champagne', 'lilac',
+    'turquoise', 'coral', 'olive', 'mustard', 'chocolate', 'violet', 'indigo', 'cyan', 'magenta', 'pearl',
+    'caramel', 'bronze', 'copper', 'aqua', 'periwinkle', 'cerulean'
+  ].sort(function (a, b) { return b.length - a.length; });
+
+  var SIZE_RE = /^(\d{2,3}|xxs|xs|s|m|l|xl|xxl|2xl|3xl|4xl|5xl|one size|free size)$/i;
+
+  function escapeRegExp(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  var COLOR_RE = new RegExp('\\b(' + COLOR_WORDS.map(escapeRegExp).join('|') + ')\\b', 'i');
+
+  function detectColor(text) {
+    if (!text) return null;
+    var m = String(text).match(COLOR_RE);
+    if (!m) return null;
+    return m[1].replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+  }
+
+  function centsToNumber(cents) {
+    return Math.round(Number(cents)) / 100;
+  }
+
+  function stripTags(html) {
+    var div = document.createElement('div');
+    div.innerHTML = html || '';
+    return div.textContent || '';
+  }
+
+  function firstImage(value) {
+    if (!value) return null;
+    if (Array.isArray(value)) return firstImage(value[0]);
+    if (typeof value === 'object') return value.url || value.src || value.contentUrl || null;
+    return String(value);
+  }
+
+  function collectImages(value) {
+    var out = [];
+    if (Array.isArray(value)) {
+      for (var i = 0; i < value.length && out.length < 6; i++) {
+        var url = firstImage(value[i]);
+        if (url && out.indexOf(url) < 0) out.push(url);
+      }
+    } else {
+      var single = firstImage(value);
+      if (single) out.push(single);
+    }
+    return out;
+  }
+
+  function productCodeFrom(description) {
+    var m = stripTags(description).match(/Product code\s*:\s*([^\s]+)/i);
+    return m ? m[1] : null;
+  }
+
+  function entryList(obj) {
+    var out = [];
+    for (var k in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, k)) out.push([k, obj[k]]);
+    }
+    return out;
+  }
+
+  var PIECE_KEYWORDS = [
+    ['mini top hat', 'Top Hat'],
+    ['top hat', 'Top Hat'],
+    ['waist cincher', 'Waist Cincher'],
+    ['cincher', 'Waist Cincher'],
+    ['wristcuff', 'Wrist Cuffs'],
+    ['hairclip', 'Hair Clips'],
+    ['ear clip', 'Ear Clips'],
+    ['hairband', 'Headband'],
+    ['headdress', 'Headdress'],
+    ['headpiece', 'Headpiece'],
+    ['headband', 'Headband'],
+    ['underskirt', 'Underskirt'],
+    ['overskirt', 'Overskirt'],
+    ['undershirt', 'Undershirt'],
+    ['petticoat', 'Petticoat'],
+    ['pantyhose', 'Pantyhose'],
+    ['stocking', 'Stockings'],
+    ['bloomer', 'Bloomers'],
+    ['blouse', 'Blouse'],
+    ['shirt', 'Shirt'],
+    ['skirt', 'Skirt'],
+    ['jacket', 'Jacket'],
+    ['cardigan', 'Cardigan'],
+    ['corset', 'Corset'],
+    ['bolero', 'Bolero'],
+    ['camisole', 'Camisole'],
+    ['salopette', 'Salopette'],
+    ['mantle', 'Mantle'],
+    ['jabot', 'Jabot'],
+    ['bonnet', 'Bonnet'],
+    ['bnt', 'Bonnet'],
+    ['apron', 'Apron'],
+    ['parasol', 'Parasol'],
+    ['umbrella', 'Parasol'],
+    ['choker', 'Choker'],
+    ['necklace', 'Necklace'],
+    ['brooch', 'Brooch'],
+    ['badge', 'Badge'],
+    ['sleeve', 'Sleeves'],
+    ['glove', 'Gloves'],
+    ['cuff', 'Cuffs'],
+    ['sock', 'Socks'],
+    ['boot', 'Boots'],
+    ['shoe', 'Shoes'],
+    ['tights', 'Tights'],
+    ['veil', 'Veil'],
+    ['belt', 'Belt'],
+    ['chain', 'Chains'],
+    ['streamer', 'Streamers'],
+    ['clip', 'Hair Clips'],
+    ['crown', 'Crown'],
+    ['beret', 'Beret'],
+    ['sash', 'Sash'],
+    ['bow', 'Bow'],
+    ['collar', 'Collar'],
+    ['tie', 'Tie'],
+    ['bag', 'Bag'],
+    ['purse', 'Bag'],
+    ['vest', 'Vest'],
+    ['shorts', 'Shorts'],
+    ['pants', 'Pants'],
+    ['dress', 'Dress'],
+    ['cape', 'Cape'],
+    ['coat', 'Coat'],
+    ['cloak', 'Cloak'],
+    ['waistband', 'Waistband'],
+    ['train', 'Train'],
+    ['accessories', 'Accessories'],
+    ['accessor', 'Accessories'],
+    ['wig', 'Wig'],
+    ['jumper', 'JSK'],
+    ['sk', 'Skirt'],
+    ['kc', 'KC'],
+    ['op', 'OP'],
+    ['jsk', 'JSK'],
+    ['hat', 'Hat'],
+    ['top', 'Top']
+  ];
+
+  var PIECE_RES = PIECE_KEYWORDS.map(function (pair) {
+    return [new RegExp('\\b' + escapeRegExp(pair[0]) + '(?:s|es)?\\b'), pair[1]];
+  });
+
+  function hasOwn(obj, key) {
+    return Object.prototype.hasOwnProperty.call(obj, key);
+  }
+
+  function titleCase(text) {
+    return String(text == null ? '' : text).replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+  }
+
+  function stripColorWords(text) {
+    var re = new RegExp(COLOR_RE.source, 'gi');
+    return String(text == null ? '' : text)
+      .replace(re, ' ')
+      .replace(/[\/|,;]+/g, ' ')
+      .replace(/\b(colou?r|size|length|style|type|piece|item|part|option\s*\d+)\b/ig, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function colorLabel(text) {
+    var source = String(text == null ? '' : text);
+    var re = new RegExp(COLOR_RE.source, 'gi');
+    var found = [];
+    var m;
+    while ((m = re.exec(source))) {
+      var label = titleCase(m[1]);
+      if (found.indexOf(label) < 0) found.push(label);
+      if (found.length >= 3) break;
+    }
+    return found.length ? found.join('/') : null;
+  }
+
+  function cleanPieceSegment(segment) {
+    return String(segment == null ? '' : segment)
+      .replace(/\([^()]*\)/g, ' ')
+      .replace(/\b(only|set|piece|pcs?|in stock|pre[- ]?order|preorder|custom(?: order)?|choose|one size|free size|not sold separately|sold separately|optional|include[sd]?)\b/ig, ' ')
+      .replace(/[^a-z0-9\s-]/ig, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function normalizePieceName(text) {
+    return titleCase(stripColorWords(cleanPieceSegment(text)));
+  }
+
+  function canonicalPiece(segment) {
+    var cleaned = cleanPieceSegment(segment).toLowerCase();
+    if (!cleaned) return null;
+    for (var i = 0; i < PIECE_RES.length; i++) {
+      if (PIECE_RES[i][0].test(cleaned)) return PIECE_RES[i][1];
+    }
+    return null;
+  }
+
+  function looksLikeBundle(text) {
+    var s = String(text == null ? '' : text);
+    if (/[+&]/.test(s)) return true;
+    if (/\b\d+\s*[-\s]?\s*pieces?\b/i.test(s)) return true;
+    return /\bset\b/i.test(s) && !/\bnot sold separately\b/i.test(s);
+  }
+
+  function extractParenList(text) {
+    var re = /\(([^()]*)\)/g;
+    var m;
+    while ((m = re.exec(text))) {
+      if (/[+&]|\band\b/i.test(m[1])) return m[1];
+    }
+    return null;
+  }
+
+  function parsePieceList(text, defaultColor) {
+    var raw = String(text == null ? '' : text);
+    var body = looksLikeBundle(raw) ? (extractParenList(raw) || raw) : raw;
+    var segments = body.split(/\s*\+\s*|\s*&\s*|\s+\band\b\s+/i);
+    var out = [];
+    var seen = {};
+    for (var i = 0; i < segments.length; i++) {
+      var segment = segments[i].trim();
+      if (!segment) continue;
+      var canonical = canonicalPiece(segment);
+      var name = canonical || normalizePieceName(segment);
+      if (!name || seen[name]) continue;
+      seen[name] = true;
+      out.push({
+        name: name,
+        canonical: !!canonical,
+        color: colorLabel(segment) || defaultColor || null,
+        raw: segment
+      });
+    }
+    return out;
+  }
+
+  function betterVariant(a, b) {
+    if (!!a.available !== !!b.available) return !!a.available;
+    return Number(a.price) < Number(b.price);
+  }
+
+  function variantSignature(v) {
+    var options = v.options || {};
+    var parts = [];
+    for (var key in options) {
+      if (!hasOwn(options, key)) continue;
+      if (/size|length/i.test(key)) continue;
+      parts.push(String(options[key]));
+    }
+    return parts.join(' / ') || v.variantTitle || String(v.id);
+  }
+
+  function variantPieceTexts(v) {
+    var options = v.options || {};
+    var texts = [];
+    var colorTexts = [];
+    for (var key in options) {
+      if (!hasOwn(options, key)) continue;
+      var value = options[key] == null ? '' : String(options[key]);
+      if (!value) continue;
+      if (/size|length/i.test(key)) continue;
+      if (/colou?r/i.test(key)) { colorTexts.push(value); continue; }
+      if (/combination|status|shipping|availability/i.test(key)) continue;
+      texts.push(value);
+    }
+    if (!texts.length) texts = colorTexts;
+    if (!texts.length && v.piece) texts.push(v.piece);
+    if (!texts.length && v.variantTitle) texts.push(v.variantTitle);
+    return texts;
+  }
+
+  function variantPieces(v) {
+    var texts = variantPieceTexts(v);
+    var pieces = [];
+    var bundle = false;
+    for (var i = 0; i < texts.length; i++) {
+      if (looksLikeBundle(texts[i])) bundle = true;
+      var parsed = parsePieceList(texts[i], v.color);
+      for (var j = 0; j < parsed.length; j++) {
+        var duplicate = false;
+        for (var k = 0; k < pieces.length; k++) {
+          if (pieces[k].name === parsed[j].name) { duplicate = true; break; }
+        }
+        if (!duplicate) pieces.push(parsed[j]);
+      }
+    }
+    if (pieces.length > 1) bundle = true;
+    return { pieces: pieces, bundle: bundle };
+  }
+
+  function classify(optionValues) {
+    var entries = entryList(optionValues);
+    var sizeValue = null;
+    var pieceParts = [];
+    var colorTexts = [];
+    for (var i = 0; i < entries.length; i++) {
+      var name = String(entries[i][0] || '');
+      var value = entries[i][1] == null ? '' : String(entries[i][1]);
+      if (!value) continue;
+      if (/size|length/i.test(name) && sizeValue == null) {
+        sizeValue = value;
+        continue;
+      }
+      if (/colou?r/i.test(name)) {
+        colorTexts.push(value);
+        var remainder = stripColorWords(value);
+        if (remainder) pieceParts.push(remainder);
+        continue;
+      }
+      pieceParts.push(value);
+    }
+    var pieceText = pieceParts.join(' ').trim();
+    var colorText = colorTexts.join(' ').trim();
+    var color = colorLabel(colorText) || colorLabel(pieceText) || null;
+    var piece = normalizePieceName(pieceText) || normalizePieceName(colorText) || 'Item';
+    return {
+      piece: piece,
+      size: sizeValue,
+      color: color
+    };
+  }
+
+  function loadAll() {
+    try {
+      var raw = typeof GM_getValue === 'function'
+        ? GM_getValue(STORAGE_KEY, '[]')
+        : (localStorage.getItem(STORAGE_KEY) || '[]');
+      var list = JSON.parse(raw);
+      return Array.isArray(list) ? list : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveAll(list) {
+    var raw = JSON.stringify(list);
+    if (typeof GM_setValue === 'function') GM_setValue(STORAGE_KEY, raw);
+    else localStorage.setItem(STORAGE_KEY, raw);
+  }
+
+  function normalizeHandleValue(handle) {
+    var text = String(handle == null ? '' : handle).trim();
+    if (!text) return '';
+    try { text = decodeURIComponent(text); } catch (e) {}
+    return text.replace(/\/+$/, '').toLowerCase();
+  }
+
+  function normalizeSource(source) {
+    var text = String(source || '42lolita.com').toLowerCase().replace(/^www\./, '').replace(/^m\./, '');
+    if (text === 'aliexpress.us') text = 'aliexpress.com';
+    return text;
+  }
+
+  function listingKeys(record) {
+    var keys = [];
+    var source = normalizeSource(record.source);
+    var handle = normalizeHandleValue(record.handle);
+    if (handle) keys.push(source + '|' + handle);
+    var pathMatch = String(record.url || '').match(/^https?:\/\/[^/]+(\/[^?#]*)/);
+    if (pathMatch) keys.push(source + '|url:' + normalizeHandleValue(pathMatch[1]));
+    var image = String(record.image || '').split('?')[0].replace(/^https?:/, '');
+    if (image.length > 20) keys.push('image:' + image);
+    if (!keys.length) keys.push(source + '|' + normalizeHandleValue(record.name));
+    return keys;
+  }
+
+  function recordKey(record) {
+    return listingKeys(record)[0];
+  }
+
+  function compactSnapshot(record) {
+    var variants = [];
+    var source = (record && record.variants) || [];
+    for (var i = 0; i < source.length; i++) {
+      variants.push({
+        id: source[i].id != null ? source[i].id : (source[i].variantTitle || ''),
+        price: Number(source[i].price) || 0,
+        available: !!source[i].available
+      });
+    }
+    return {
+      savedAt: (record && record.savedAt) || '',
+      currency: (record && record.currency) || '',
+      variants: variants
+    };
+  }
+
+  function pushHistory(history, snapshot) {
+    var list = Array.isArray(history) ? history.slice() : [];
+    var day = String(snapshot.savedAt || '').slice(0, 10);
+    var replaced = false;
+    for (var i = 0; i < list.length; i++) {
+      if (String(list[i].savedAt || '').slice(0, 10) === day) {
+        list[i] = snapshot;
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced) list.push(snapshot);
+    list.sort(function (a, b) {
+      var aDate = String(a.savedAt || '');
+      var bDate = String(b.savedAt || '');
+      if (aDate === bDate) return 0;
+      return aDate < bDate ? -1 : 1;
+    });
+    if (list.length > 180) list = list.slice(list.length - 180);
+    return list;
+  }
+
+  function mergeHistoryFrom(base, other) {
+    var history = Array.isArray(base.history) ? base.history.slice() : [];
+    var otherHistory = Array.isArray(other.history) ? other.history : [];
+    for (var i = 0; i < otherHistory.length; i++) history = pushHistory(history, otherHistory[i]);
+    history = pushHistory(history, compactSnapshot(other));
+    base.history = history;
+    return base;
+  }
+
+  function dedupeList(products) {
+    var groups = {};
+    var out = [];
+    for (var i = 0; i < products.length; i++) {
+      var record = products[i];
+      var keys = listingKeys(record);
+      var target = -1;
+      for (var k = 0; k < keys.length; k++) {
+        if (groups[keys[k]] !== undefined) {
+          target = groups[keys[k]];
+          break;
+        }
+      }
+      if (target < 0) {
+        out.push(record);
+        target = out.length - 1;
+      } else {
+        var existing = out[target];
+        var newer = String(record.savedAt || '') >= String(existing.savedAt || '') ? record : existing;
+        var older = newer === record ? existing : record;
+        var mergedKeys = listingKeys(existing).concat(listingKeys(record));
+        out[target] = mergeHistoryFrom(newer, older);
+        for (var mk = 0; mk < mergedKeys.length; mk++) groups[mergedKeys[mk]] = target;
+      }
+      var recordKeys = listingKeys(out[target]);
+      for (var rk = 0; rk < recordKeys.length; rk++) groups[recordKeys[rk]] = target;
+    }
+    return out;
+  }
+
+  function dedupeRecords() {
+    var all = loadAll();
+    var out = dedupeList(all);
+    if (out.length === all.length) return 0;
+    saveAll(out);
+    return all.length - out.length;
+  }
+
+  function recordsMatch(a, b) {
+    var aKeys = listingKeys(a);
+    var bKeys = listingKeys(b);
+    for (var i = 0; i < aKeys.length; i++) {
+      if (bKeys.indexOf(aKeys[i]) >= 0) return true;
+    }
+    return false;
+  }
+
+  function upsertRecord(record) {
+    var all = loadAll();
+    for (var i = 0; i < all.length; i++) {
+      if (recordsMatch(all[i], record)) {
+        record.history = pushHistory(all[i].history, compactSnapshot(all[i]));
+        all[i] = record;
+        saveAll(all);
+        return i;
+      }
+    }
+    all.push(record);
+    saveAll(all);
+    return all.length - 1;
+  }
+
+  function recordItemKey(record) {
+    if (!record) return '';
+    return (record.source || '42lolita.com') + '|' + (record.handle || record.name || '');
+  }
+
+  function qualifyKey(key) {
+    var text = String(key == null ? '' : key);
+    return text.indexOf('|') >= 0 ? text : '42lolita.com|' + text;
+  }
+
+  function loadPriority() {
+    try {
+      var raw = typeof GM_getValue === 'function'
+        ? GM_getValue(PRIORITY_KEY, '{}')
+        : (localStorage.getItem(PRIORITY_KEY) || '{}');
+      var map = JSON.parse(raw);
+      return map && typeof map === 'object' ? map : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function savePriority(map) {
+    var raw = JSON.stringify(map);
+    if (typeof GM_setValue === 'function') GM_setValue(PRIORITY_KEY, raw);
+    else localStorage.setItem(PRIORITY_KEY, raw);
+  }
+
+  function priorityScore(record) {
+    var key = recordItemKey(record);
+    if (!key) return 0;
+    var map = loadPriority();
+    return Number(map[key]) || 0;
+  }
+
+  function likeItem(record) {
+    var key = recordItemKey(record);
+    if (!key) return 0;
+    var map = loadPriority();
+    var max = 0;
+    for (var k in map) {
+      if (hasOwn(map, k) && Number(map[k]) > max) max = Number(map[k]);
+    }
+    var stamp = Math.max(Date.now(), max + 1);
+    map[key] = stamp;
+    savePriority(map);
+    return stamp;
+  }
+
+  function isLiked(record) {
+    return priorityScore(record) > 0;
+  }
+
+  function loadUnavailable() {
+    try {
+      var raw = typeof GM_getValue === 'function'
+        ? GM_getValue(UNAVAILABLE_KEY, '{}')
+        : (localStorage.getItem(UNAVAILABLE_KEY) || '{}');
+      var map = JSON.parse(raw);
+      return map && typeof map === 'object' ? map : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function saveUnavailable(map) {
+    var raw = JSON.stringify(map);
+    if (typeof GM_setValue === 'function') GM_setValue(UNAVAILABLE_KEY, raw);
+    else localStorage.setItem(UNAVAILABLE_KEY, raw);
+  }
+
+  function loadUi() {
+    try {
+      var raw = typeof GM_getValue === 'function'
+        ? GM_getValue(UI_KEY, '{}')
