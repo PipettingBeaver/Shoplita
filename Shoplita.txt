@@ -1198,3 +1198,603 @@
 
   function detectCurrency() {
     var scripts = document.querySelectorAll('script[type="application/ld+json"]');
+    for (var i = 0; i < scripts.length; i++) {
+      var m = (scripts[i].textContent || '').match(/"priceCurrency"\s*:\s*"([A-Z]{3})"/);
+      if (m) return m[1];
+    }
+    var meta = document.querySelector('meta[property="product:price:currency"], meta[itemprop="priceCurrency"]');
+    return (meta && meta.content) || 'USD';
+  }
+
+  function normalize(product, handle, currency) {
+    var optionNames = [];
+    var opts = product.options || [];
+    for (var i = 0; i < opts.length; i++) {
+      optionNames.push(typeof opts[i] === 'string' ? opts[i] : opts[i].name);
+    }
+    var variants = [];
+    var pvs = product.variants || [];
+    for (var j = 0; j < pvs.length; j++) {
+      var v = pvs[j];
+      var values = [v.option1, v.option2, v.option3].filter(function (x) {
+        return x !== null && x !== undefined && x !== '';
+      });
+      var optionValues = {};
+      for (var k = 0; k < values.length; k++) {
+        optionValues[optionNames[k] || 'Option ' + (k + 1)] = values[k];
+      }
+      var info = classify(optionValues);
+      variants.push({
+        id: v.id,
+        variantTitle: v.title,
+        piece: info.piece,
+        color: info.color,
+        size: info.size,
+        price: centsToNumber(v.price),
+        compareAtPrice: v.compare_at_price && Number(v.compare_at_price) > 0
+          ? centsToNumber(v.compare_at_price)
+          : null,
+        available: !!v.available,
+        sku: v.sku || null,
+        options: optionValues,
+        url: location.origin + location.pathname + '?variant=' + v.id
+      });
+    }
+    var images = collectImages(product.images || product.image || product.featured_image);
+    var primaryImage = firstImage(product.featured_image) || (images.length ? images[0] : null);
+    if (primaryImage && images.indexOf(primaryImage) < 0) images.unshift(primaryImage);
+    return {
+      name: product.title,
+      type: product.type || null,
+      brand: product.vendor || null,
+      productCode: productCodeFrom(product.description),
+      image: primaryImage,
+      images: images.slice(0, 6),
+      currency: currency,
+      source: currentSource(),
+      handle: handle,
+      url: location.origin + location.pathname,
+      savedAt: new Date().toISOString(),
+      variants: variants
+    };
+  }
+
+  function guessOptionName(value, index) {
+    if (SIZE_RE.test(value) || /length/i.test(value)) return 'Size';
+    if (detectColor(value)) return 'Color';
+    if (index === 0) return 'Color';
+    return 'Option ' + (index + 1);
+  }
+
+  function variantParts(fullName, productName) {
+    var prefix = (productName || '') + ' - ';
+    var title = fullName && fullName.indexOf(prefix) === 0 ? fullName.slice(prefix.length) : (fullName || '');
+    return title.split(' / ');
+  }
+
+  function idFromUrl(u) {
+    var m = String(u || '').match(/variant=(\d+)/);
+    return m ? Number(m[1]) : (u || null);
+  }
+
+  function fromJsonLd() {
+    var scripts = document.querySelectorAll('script[type="application/ld+json"]');
+    var group = null;
+    for (var i = 0; i < scripts.length; i++) {
+      var data;
+      try {
+        data = JSON.parse(scripts[i].textContent);
+      } catch (e) {
+        continue;
+      }
+      if (data && data['@type'] === 'ProductGroup' && data.hasVariant && data.hasVariant.length) {
+        group = data;
+        break;
+      }
+    }
+    if (!group) return null;
+
+    var productName = group.name || document.title;
+    var variants = [];
+    var optionNames = null;
+    for (var j = 0; j < group.hasVariant.length; j++) {
+      var hv = group.hasVariant[j] || {};
+      var parts = variantParts(hv.name, productName);
+      var offer = hv.offers || {};
+      if (!optionNames) {
+        optionNames = [];
+        for (var n = 0; n < parts.length; n++) optionNames.push(guessOptionName(parts[n], n));
+      }
+      variants.push({
+        id: idFromUrl(offer.url || hv['@id']),
+        title: parts.join(' / '),
+        option1: parts[0] || null,
+        option2: parts[1] || null,
+        option3: parts[2] || null,
+        price: Math.round(parseFloat(offer.price || 0) * 100),
+        compare_at_price: null,
+        available: /InStock/i.test(offer.availability || ''),
+        sku: hv.sku || null
+      });
+    }
+    return {
+      title: productName,
+      type: group.category || null,
+      vendor: (group.brand && group.brand.name) || null,
+      description: group.description || '',
+      image: firstImage(group.image),
+      options: optionNames || [],
+      variants: variants
+    };
+  }
+
+  function currentHandle() {
+    var m = location.pathname.match(/\/products\/([^/?#]+)/);
+    return m ? m[1] : null;
+  }
+
+  function currentPageId() {
+    var handle = currentHandle();
+    if (handle) return handle;
+    var path = String(location.pathname || '');
+    var parts = path.split('/').filter(function (part) { return !!part; });
+    var last = parts.length ? parts[parts.length - 1] : '';
+    return last.replace(/\.html?$/i, '') || null;
+  }
+
+  function currentSource() {
+    return String(location.hostname || '').replace(/^www\./, '') || '42lolita.com';
+  }
+
+  function recordOrigin(record) {
+    var match = String((record && record.url) || '').match(/^https?:\/\/[^/]+/);
+    return match ? match[0] : location.origin;
+  }
+
+  function findLatestByHandle(handle) {
+    if (!handle) return null;
+    var all = loadAll();
+    var latest = null;
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].handle !== handle || (all[i].source || '42lolita.com') !== currentSource()) continue;
+      if (!latest || String(all[i].savedAt || '') > String(latest.savedAt || '')) latest = all[i];
+    }
+    return latest;
+  }
+
+  var ADAPTERS = [];
+
+  function registerAdapter(adapter) {
+    ADAPTERS.push(adapter);
+  }
+
+  function adapterFor(url) {
+    for (var i = 0; i < ADAPTERS.length; i++) {
+      if (ADAPTERS[i].matches(url)) return ADAPTERS[i];
+    }
+    return null;
+  }
+
+  registerAdapter({
+    id: 'shopify',
+    label: '42Lolita and other Shopify stores',
+    matches: function () {
+      return /\/products\/[^/?#]+/.test(location.pathname);
+    },
+    collect: function () {
+      var handle = currentHandle();
+      if (!handle) return Promise.reject(new Error('not a product page'));
+      var url = location.origin + '/products/' + encodeURIComponent(handle) + '.js';
+      return fetchJson(url).catch(function () { return null; }).then(function (product) {
+        if (!product || !product.variants || !product.variants.length) product = fromJsonLd();
+        if (!product || !product.variants || !product.variants.length) {
+          throw new Error('could not read product data');
+        }
+        return normalize(product, handle, detectCurrency());
+      });
+    }
+  });
+
+  function domText(selector) {
+    var el = document.querySelector(selector);
+    return el && el.textContent ? el.textContent.trim() : '';
+  }
+
+  function metaContent(selector) {
+    var el = document.querySelector(selector);
+    return el ? (el.getAttribute('content') || '') : '';
+  }
+
+  function parsePriceNumber(text) {
+    var match = String(text == null ? '' : text).replace(/\s/g, '').match(/(\d[\d.,]*)/);
+    if (!match) return null;
+    var value = parseFloat(match[1].replace(/,/g, ''));
+    return isNaN(value) ? null : value;
+  }
+
+  function domPriceNumber() {
+    var candidates = [
+      metaContent('meta[itemprop="price"]'),
+      metaContent('meta[property="product:price:amount"]'),
+      metaContent('meta[property="og:price:amount"]')
+    ];
+    for (var i = 0; i < candidates.length; i++) {
+      var meta = parsePriceNumber(candidates[i]);
+      if (meta != null) return meta;
+    }
+    var priceEl = document.querySelector('[itemprop="price"], .product-price-lg, .product-price, #price, .price, [class*="price-default--current"], [class*="price--current"]');
+    if (priceEl) {
+      var elementPrice = parsePriceNumber(priceEl.textContent);
+      if (elementPrice != null) return elementPrice;
+    }
+    var body = String(document.body ? document.body.textContent : '');
+    var match = body.match(/(?:US\$|\$|€|£|¥)\s?(\d[\d.,]*)/);
+    return match ? parsePriceNumber(match[1]) : null;
+  }
+
+  function domSoldOut() {
+    var markers = ['[class*="soldOut"]', '[class*="sold-out"]', '[class*="outOfStock"]', '[class*="out-of-stock"]'];
+    for (var i = 0; i < markers.length; i++) {
+      var el = document.querySelector(markers[i]);
+      if (el && (el.offsetParent === undefined || el.offsetParent !== null)) return true;
+    }
+    var body = document.body;
+    if (!body) return false;
+    var text = typeof body.innerText === 'string' ? body.innerText : String(body.textContent || '');
+    return /sold ?out|out of stock/i.test(text);
+  }
+
+  function aliexpressAvailability(quantity) {
+    if (quantity == null || isNaN(quantity) || quantity < 0) return true;
+    return quantity > 0;
+  }
+
+  function collectGenericDom() {
+    var name = metaContent('meta[property="og:title"]') || domText('h1') || document.title || 'Unnamed product';
+    var price = domPriceNumber();
+    if (price == null) return Promise.reject(new Error('could not read price on this page'));
+    var currency = detectCurrency();
+    var image = metaContent('meta[property="og:image"]') || null;
+    var description = metaContent('meta[name="description"]') || '';
+    var soldOut = domSoldOut();
+    var variants = [];
+    var seen = {};
+    var nodes = document.querySelectorAll('select option, button, a, span, li');
+    for (var i = 0; i < nodes.length && variants.length < 60; i++) {
+      var text = String(nodes[i].textContent || '').trim();
+      if (!text || text.length > 24 || !SIZE_RE.test(text) || seen[text]) continue;
+      seen[text] = true;
+      variants.push({
+        id: text,
+        title: text,
+        option1: text,
+        option2: null,
+        option3: null,
+        price: Math.round(price * 100),
+        compare_at_price: null,
+        available: !soldOut,
+        sku: null
+      });
+    }
+    if (!variants.length) {
+      variants.push({
+        id: 'base',
+        title: name,
+        option1: null,
+        option2: null,
+        option3: null,
+        price: Math.round(price * 100),
+        compare_at_price: null,
+        available: !soldOut,
+        sku: null
+      });
+    }
+    return Promise.resolve(normalize({
+      title: name,
+      type: null,
+      vendor: null,
+      description: description,
+      image: image,
+      options: [],
+      variants: variants
+    }, currentPageId(), currency));
+  }
+
+  function collectDevilinspired() {
+    var name = domText('#product-name') || metaContent('meta[property="og:title"]') || document.title;
+    var price = domPriceNumber();
+    if (price == null) return Promise.reject(new Error('could not read price on this page'));
+    var currency = detectCurrency();
+    var image = metaContent('meta[property="og:image"]') || null;
+    var skuMap = null;
+    try { skuMap = window.skuMap || null; } catch (e) {}
+    if (!skuMap) {
+      var scripts = document.querySelectorAll('script');
+      for (var s = 0; s < scripts.length; s++) {
+        var match = String(scripts[s].textContent || '').match(/var\s+skuMap\s*=\s*(\{[\s\S]*?\});/);
+        if (!match) continue;
+        try { skuMap = JSON.parse(match[1]); } catch (e2) {}
+        break;
+      }
+    }
+    var soldOut = domSoldOut();
+    var variants = [];
+    if (skuMap) {
+      for (var key in skuMap) {
+        if (!hasOwn(skuMap, key)) continue;
+        var entry = skuMap[key] || {};
+        var label = entry.name || '';
+        if (!label) continue;
+        var delta = parseFloat(entry.price || '0') || 0;
+        if (entry.price_prefix === '-') delta = -delta;
+        var quantity = Number(entry.quantity);
+        variants.push({
+          id: entry.product_option_value_id || key,
+          title: label,
+          option1: label,
+          option2: null,
+          option3: null,
+          price: Math.round((price + delta) * 100),
+          compare_at_price: null,
+          available: isNaN(quantity) ? !soldOut : quantity !== 0,
+          sku: null
+        });
+      }
+    }
+    if (!variants.length) {
+      variants.push({
+        id: 'base',
+        title: name,
+        option1: null,
+        option2: null,
+        option3: null,
+        price: Math.round(price * 100),
+        compare_at_price: null,
+        available: !soldOut,
+        sku: null
+      });
+    }
+    return Promise.resolve(normalize({
+      title: name,
+      type: null,
+      vendor: null,
+      description: '',
+      image: image,
+      options: [],
+      variants: variants
+    }, currentPageId(), currency));
+  }
+
+  registerAdapter({
+    id: 'devilinspired',
+    label: 'Devilinspired',
+    matches: function () {
+      return /(^|\.)devilinspired\.com$/.test(location.hostname || '') && /\.html?$/i.test(location.pathname || '');
+    },
+    collect: collectDevilinspired
+  });
+
+  registerAdapter({
+    id: 'my-lolita-dress',
+    label: 'My-Lolita-Dress',
+    matches: function () {
+      return /(^|\.)my-lolita-dress\.com$/.test(location.hostname || '') && /-p\d+\.html?$/i.test(location.pathname || '');
+    },
+    collect: collectGenericDom
+  });
+
+  function findEmbeddedJson(names) {
+    for (var n = 0; n < names.length; n++) {
+      try {
+        var global = window[names[n]];
+        if (global && typeof global === 'object') return global;
+      } catch (e) {}
+    }
+    var scripts = document.querySelectorAll('script');
+    for (var i = 0; i < scripts.length; i++) {
+      var text = String(scripts[i].textContent || '');
+      if (!text) continue;
+      for (var j = 0; j < names.length; j++) {
+        var index = text.indexOf('window.' + names[j]);
+        if (index < 0) continue;
+        var start = text.indexOf('{', index);
+        if (start < 0) continue;
+        var depth = 0;
+        for (var k = start; k < text.length; k++) {
+          if (text.charAt(k) === '{') depth++;
+          else if (text.charAt(k) === '}') {
+            depth--;
+            if (depth === 0) {
+              try { return JSON.parse(text.slice(start, k + 1)); } catch (e2) {}
+              break;
+            }
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  function aliexpressData(raw) {
+    return raw && raw.data ? raw.data : (raw || {});
+  }
+
+  function aliexpressSkuBase(data) {
+    var skuBase = (data.skuModule && data.skuModule.skuBase) || data.skuBase || null;
+    if (!skuBase) return { props: [], skus: [] };
+    return {
+      props: Array.isArray(skuBase.props) ? skuBase.props : [],
+      skus: Array.isArray(skuBase.skus) ? skuBase.skus : []
+    };
+  }
+
+  function aliexpressVariantOptions(skuAttr, props) {
+    var byVid = {};
+    for (var p = 0; p < props.length; p++) {
+      var values = Array.isArray(props[p].values) ? props[p].values : [];
+      for (var v = 0; v < values.length; v++) {
+        byVid[String(values[v].vid)] = {
+          name: props[p].name || ('Option ' + (p + 1)),
+          value: values[v].name || String(values[v].vid)
+        };
+      }
+    }
+    var segments = String(skuAttr || '').split(';');
+    var out = [];
+    for (var s = 0; s < segments.length; s++) {
+      var segment = segments[s].trim();
+      if (!segment) continue;
+      var hash = segment.indexOf('#');
+      var valueName = hash >= 0 ? segment.slice(hash + 1) : '';
+      var head = hash >= 0 ? segment.slice(0, hash) : segment;
+      var vid = head.indexOf(':') >= 0 ? head.split(':')[1] : head;
+      var mapped = byVid[String(vid)];
+      if (mapped) out.push(mapped);
+      else if (valueName) out.push({ name: 'Option', value: valueName });
+    }
+    return out;
+  }
+
+  function aliexpressDomProperties() {
+    var props = [];
+    var rows = document.querySelectorAll('[class*="sku-item--property"]');
+    for (var i = 0; i < rows.length && props.length < 3; i++) {
+      var row = rows[i];
+      var titleEl = row.querySelector ? row.querySelector('[class*="sku-item--title"]') : null;
+      var title = titleEl ? String(titleEl.textContent || '').replace(/\s+/g, ' ').trim() : '';
+      var nameMatch = title.match(/^([^:：]+)[:：]/) || title.match(/^([A-Za-z][A-Za-z ]*)/);
+      var propName = nameMatch ? nameMatch[1].replace(/\(.*?\)/g, '').trim() : ('Option ' + (i + 1));
+      var selected = row.querySelector ? row.querySelector('[class*="sku-item--selected"]') : null;
+      var selectedValue = '';
+      if (selected) {
+        if (selected.getAttribute && selected.getAttribute('title')) selectedValue = selected.getAttribute('title');
+        if (!selectedValue) selectedValue = String(selected.textContent || '').trim();
+        if (!selectedValue && selected.querySelector) {
+          var selectedImg = selected.querySelector('img');
+          if (selectedImg && selectedImg.getAttribute) selectedValue = selectedImg.getAttribute('alt') || '';
+        }
+      }
+      var values = [];
+      var valueEls = row.querySelectorAll ? row.querySelectorAll('[data-sku-col]') : [];
+      for (var v = 0; v < valueEls.length; v++) {
+        var el = valueEls[v];
+        var text = '';
+        if (el.getAttribute && el.getAttribute('title')) text = el.getAttribute('title');
+        if (!text) text = String(el.textContent || '').trim();
+        if (!text && el.querySelector) {
+          var img = el.querySelector('img');
+          if (img && img.getAttribute) text = img.getAttribute('alt') || '';
+        }
+        if (text && values.indexOf(text) < 0) values.push(text);
+      }
+      if (selectedValue && values.indexOf(selectedValue) < 0) values.unshift(selectedValue);
+      if (!selectedValue && values.length) selectedValue = values[0];
+      if (!selectedValue && !values.length) continue;
+      values.sort(function (a, b) {
+        if (a === selectedValue) return -1;
+        if (b === selectedValue) return 1;
+        return 0;
+      });
+      props.push({ name: propName, values: values, selected: selectedValue });
+    }
+    return props;
+  }
+
+  var capturedAliExpressData = null;
+  var capturedAliExpressImages = [];
+
+  function getCapturedAliExpressData() {
+    return capturedAliExpressData;
+  }
+
+  function getCapturedAliExpressImages() {
+    return capturedAliExpressImages;
+  }
+
+  function updateDebugAttribute() {
+    try {
+      var root = document.documentElement;
+      if (!root || !root.setAttribute) return;
+      var version = '';
+      try {
+        version = (typeof GM_info !== 'undefined' && GM_info.script) ? GM_info.script.version : '';
+      } catch (e) {}
+      var adapter = adapterFor(location.href);
+      root.setAttribute('data-shoplita-debug', JSON.stringify({
+        version: version,
+        adapter: adapter ? adapter.id : null,
+        captured: !!capturedAliExpressData,
+        capturedImages: capturedAliExpressImages,
+        domImages: aliexpressDomImages()
+      }));
+    } catch (e) {}
+  }
+
+  function findImageList(node, depth) {
+    if (!node || typeof node !== 'object' || depth > 6) return null;
+    if (Array.isArray(node.imagePathList) && node.imagePathList.length) return node.imagePathList;
+    if (Array.isArray(node.imageList) && node.imageList.length) return node.imageList;
+    for (var key in node) {
+      if (!hasOwn(node, key)) continue;
+      var found = findImageList(node[key], depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function findSkuBaseObject(node, depth) {
+    if (!node || typeof node !== 'object' || depth > 6) return null;
+    if (node.skuBase && (node.skuBase.skus || node.skuBase.props)) return node;
+    if (node.skuModule && node.skuModule.skuBase) return node;
+    for (var key in node) {
+      if (!hasOwn(node, key)) continue;
+      var found = findSkuBaseObject(node[key], depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function captureAliExpressText(text) {
+    if (capturedAliExpressData || !text) return false;
+    var source = String(text);
+    if (source.length > 3000000 || source.indexOf('"skuBase"') < 0) return false;
+    try {
+      var parsed = JSON.parse(source);
+      var found = findSkuBaseObject(parsed, 0);
+      if (!found) return false;
+      capturedAliExpressData = found;
+      var imageList = findImageList(parsed, 0);
+      if (imageList) {
+        for (var ii = 0; ii < imageList.length && capturedAliExpressImages.length < 6; ii++) {
+          var rawUrl = typeof imageList[ii] === 'string' ? imageList[ii] : (imageList[ii].imgUrl || imageList[ii].url || '');
+          var url = aliexpressImageUrl(rawUrl);
+          if (url && capturedAliExpressImages.indexOf(url) < 0) capturedAliExpressImages.push(url);
+        }
+      }
+      updateDebugAttribute();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function installAliExpressSniffer() {
+    if (!/(^|\.)aliexpress\.(com|us)$/.test(location.hostname || '')) return;
+    try {
+      if (window.__shoplitaAeSniffer) return;
+      window.__shoplitaAeSniffer = true;
+      var originalFetch = window.fetch;
+      if (typeof originalFetch === 'function') {
+        window.fetch = function () {
+          var args = arguments;
+          return originalFetch.apply(this, args).then(function (response) {
+            try {
+              response.clone().text().then(function (text) {
+                if (text && text.indexOf('"skuBase"') >= 0) captureAliExpressText(text);
+              }).catch(function () {});
+            } catch (e) {}
+            return response;
+          });
+        };
+      }
+      var XHR = window.XMLHttpRequest;
