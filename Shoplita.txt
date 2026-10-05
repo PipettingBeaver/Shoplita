@@ -598,3 +598,603 @@
     try {
       var raw = typeof GM_getValue === 'function'
         ? GM_getValue(UI_KEY, '{}')
+        : (localStorage.getItem(UI_KEY) || '{}');
+      var map = JSON.parse(raw);
+      return map && typeof map === 'object' ? map : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function saveUi(map) {
+    var raw = JSON.stringify(map);
+    if (typeof GM_setValue === 'function') GM_setValue(UI_KEY, raw);
+    else localStorage.setItem(UI_KEY, raw);
+  }
+
+  function loadCollections() {
+    try {
+      var raw = storageGet(COLLECTIONS_KEY) || '[]';
+      var list = JSON.parse(raw);
+      return Array.isArray(list) ? list : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveCollections(list) {
+    storageSet(COLLECTIONS_KEY, JSON.stringify(list));
+  }
+
+  function findCollection(id) {
+    var list = loadCollections();
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && list[i].id === id) return list[i];
+    }
+    return null;
+  }
+
+  function createCollection(name) {
+    var clean = String(name == null ? '' : name).trim().slice(0, 60);
+    if (!clean) return null;
+    var list = loadCollections();
+    for (var i = 0; i < list.length; i++) {
+      if (String(list[i].name || '').toLowerCase() === clean.toLowerCase()) return list[i];
+    }
+    var collection = {
+      id: 'set-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      name: clean,
+      items: []
+    };
+    list.push(collection);
+    saveCollections(list);
+    return collection;
+  }
+
+  function deleteCollection(id) {
+    var list = loadCollections();
+    var kept = [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id !== id) kept.push(list[i]);
+    }
+    saveCollections(kept);
+    if (getDefaultSetId() === id) setDefaultSetId(null);
+  }
+
+  function addCollectionItem(id, itemKey) {
+    if (!id || !itemKey) return false;
+    var list = loadCollections();
+    var collection = null;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && list[i].id === id) collection = list[i];
+    }
+    if (!collection) return false;
+    if (!Array.isArray(collection.items)) collection.items = [];
+    if (collection.items.indexOf(itemKey) >= 0) return false;
+    collection.items.push(itemKey);
+    saveCollections(list);
+    return true;
+  }
+
+  function getDefaultSetId() {
+    var ui = loadUi();
+    return ui.addToSet || null;
+  }
+
+  function setDefaultSetId(id) {
+    var ui = loadUi();
+    ui.addToSet = id || null;
+    saveUi(ui);
+  }
+
+  function getSortBy() {
+    var ui = loadUi();
+    return ui.sortBy === 'priority' ? 'priority' : 'recent';
+  }
+
+  function setSortBy(value) {
+    var ui = loadUi();
+    ui.sortBy = value === 'priority' ? 'priority' : 'recent';
+    saveUi(ui);
+  }
+
+  function toggleCollectionItem(id, itemKey) {
+    if (!id || !itemKey) return false;
+    var list = loadCollections();
+    var collection = null;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && list[i].id === id) collection = list[i];
+    }
+    if (!collection) return false;
+    if (!Array.isArray(collection.items)) collection.items = [];
+    var index = collection.items.indexOf(itemKey);
+    if (index >= 0) {
+      collection.items.splice(index, 1);
+      saveCollections(list);
+      return false;
+    }
+    collection.items.push(itemKey);
+    saveCollections(list);
+    return true;
+  }
+
+  function collectionsForItem(itemKey) {
+    var list = loadCollections();
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && Array.isArray(list[i].items) && list[i].items.indexOf(itemKey) >= 0) out.push(list[i]);
+    }
+    return out;
+  }
+
+  function collectionRecord(collection) {
+    if (!collection) return null;
+    var byKey = {};
+    var records = latestSnapshots(loadAll());
+    for (var i = 0; i < records.length; i++) byKey[recordItemKey(records[i])] = records[i];
+    var items = Array.isArray(collection.items) ? collection.items : [];
+    var variants = [];
+    var first = null;
+    for (var j = 0; j < items.length; j++) {
+      var record = byKey[items[j]];
+      if (!record) continue;
+      if (!first) first = record;
+      var recordVariants = record.variants || [];
+      for (var k = 0; k < recordVariants.length; k++) {
+        var variant = JSON.parse(JSON.stringify(recordVariants[k]));
+        variant.variantTitle = record.name + ' \u2014 ' + (variant.variantTitle || variant.piece || '');
+        variants.push(variant);
+      }
+    }
+    if (!first) return null;
+    return {
+      name: 'Set: ' + collection.name,
+      handle: collection.id,
+      source: 'shoplita.set',
+      url: first.url,
+      image: first.image || null,
+      currency: first.currency || '',
+      savedAt: new Date().toISOString(),
+      variants: variants
+    };
+  }
+
+  function loadOutfits() {
+    try {
+      var raw = storageGet(OUTFITS_KEY) || '[]';
+      var list = JSON.parse(raw);
+      return Array.isArray(list) ? list : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveOutfits(list) {
+    storageSet(OUTFITS_KEY, JSON.stringify(list));
+  }
+
+  function createOutfit(name, pieces, currency) {
+    if (!Array.isArray(pieces) || !pieces.length) return null;
+    var clean = String(name == null ? '' : name).trim().slice(0, 60) ||
+      ('Outfit ' + new Date().toISOString().slice(0, 10));
+    var total = 0;
+    for (var i = 0; i < pieces.length; i++) total += Number(pieces[i].price) || 0;
+    var outfit = {
+      id: 'fit-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      name: clean,
+      createdAt: new Date().toISOString(),
+      currency: currency || '',
+      total: Math.round(total * 100) / 100,
+      pieces: pieces
+    };
+    var list = loadOutfits();
+    list.push(outfit);
+    saveOutfits(list);
+    return outfit;
+  }
+
+  function deleteOutfit(id) {
+    var list = loadOutfits();
+    var kept = [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id !== id) kept.push(list[i]);
+    }
+    saveOutfits(kept);
+  }
+
+  function outfitRecord(outfit) {
+    if (!outfit || !Array.isArray(outfit.pieces) || !outfit.pieces.length) return null;
+    var variants = [];
+    for (var i = 0; i < outfit.pieces.length; i++) {
+      var piece = outfit.pieces[i];
+      var options = { 'Piece': piece.name };
+      if (piece.color) options['Color'] = piece.color;
+      variants.push({
+        id: outfit.id + '-' + i,
+        variantTitle: piece.name + (piece.color ? ' / ' + piece.color : ''),
+        piece: piece.name,
+        color: piece.color || null,
+        size: null,
+        price: Number(piece.price) || 0,
+        compareAtPrice: null,
+        available: piece.available !== false,
+        sku: null,
+        options: options,
+        url: piece.itemUrl || null
+      });
+    }
+    return {
+      name: 'Outfit: ' + outfit.name,
+      handle: outfit.id,
+      source: 'shoplita.outfit',
+      url: null,
+      image: null,
+      currency: outfit.currency || '',
+      savedAt: outfit.createdAt || new Date().toISOString(),
+      variants: variants
+    };
+  }
+
+  function normalizeSources() {
+    var changed = false;
+    var all = loadAll();
+    for (var i = 0; i < all.length; i++) {
+      if (!all[i].source) {
+        all[i].source = '42lolita.com';
+        changed = true;
+      }
+    }
+    if (changed) saveAll(all);
+    dedupeRecords();
+    var maps = [[loadPriority, savePriority], [loadUnavailable, saveUnavailable]];
+    for (var m = 0; m < maps.length; m++) {
+      var map = maps[m][0]();
+      var dirty = false;
+      var migrated = {};
+      for (var key in map) {
+        if (!hasOwn(map, key)) continue;
+        var newKey = qualifyKey(key);
+        if (newKey !== key) dirty = true;
+        migrated[newKey] = map[key];
+      }
+      if (dirty) maps[m][1](migrated);
+    }
+    var priority = loadPriority();
+    var legacyPriority = [];
+    for (var pk in priority) {
+      if (!hasOwn(priority, pk)) continue;
+      var priorityValue = Number(priority[pk]) || 0;
+      if (priorityValue > 0 && priorityValue < 1000000000000) legacyPriority.push([pk, priorityValue]);
+    }
+    if (legacyPriority.length) {
+      legacyPriority.sort(function (a, b) { return a[1] - b[1]; });
+      var priorityBase = Date.now();
+      for (var lp = 0; lp < legacyPriority.length; lp++) {
+        priority[legacyPriority[lp][0]] = priorityBase - (legacyPriority.length - lp) * 1000;
+      }
+      savePriority(priority);
+    }
+    var keys = loadCompareKeys();
+    var keyDirty = false;
+    if (keys.a && keys.a.indexOf('|') < 0) { keys.a = qualifyKey(keys.a); keyDirty = true; }
+    if (keys.b && keys.b.indexOf('|') < 0) { keys.b = qualifyKey(keys.b); keyDirty = true; }
+    if (keyDirty) saveCompareKeys(keys);
+  }
+
+  function storageGet(key) {
+    try {
+      if (typeof GM_getValue === 'function') return GM_getValue(key, null);
+      return typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function storageSet(key, value) {
+    try {
+      if (typeof GM_setValue === 'function') GM_setValue(key, value);
+      else if (typeof localStorage !== 'undefined') localStorage.setItem(key, value);
+    } catch (e) {}
+  }
+
+  function migrateLegacyKeys() {
+    var legacy = [
+      ['savedInfo.v1', STORAGE_KEY],
+      ['priority.v1', PRIORITY_KEY],
+      ['unavailable.v1', UNAVAILABLE_KEY],
+      ['compare.v1', COMPARE_KEY],
+      ['ui.v1', UI_KEY]
+    ];
+    for (var i = 0; i < legacy.length; i++) {
+      var oldValue = storageGet(legacy[i][0]);
+      var newValue = storageGet(legacy[i][1]);
+      if (oldValue != null && newValue == null) storageSet(legacy[i][1], oldValue);
+    }
+  }
+
+  function isMarkedUnavailable(record) {
+    var key = recordItemKey(record);
+    if (!key) return false;
+    return !!loadUnavailable()[key];
+  }
+
+  function toggleUnavailable(record) {
+    var key = recordItemKey(record);
+    if (!key) return false;
+    var map = loadUnavailable();
+    if (map[key]) delete map[key];
+    else map[key] = true;
+    saveUnavailable(map);
+    return !!map[key];
+  }
+
+  function removeItemGroup(itemKey) {
+    var all = loadAll();
+    var kept = [];
+    for (var i = 0; i < all.length; i++) {
+      if (recordItemKey(all[i]) !== itemKey) kept.push(all[i]);
+    }
+    saveAll(kept);
+    var priority = loadPriority();
+    if (priority[itemKey] !== undefined) {
+      delete priority[itemKey];
+      savePriority(priority);
+    }
+    var unavailable = loadUnavailable();
+    if (unavailable[itemKey] !== undefined) {
+      delete unavailable[itemKey];
+      saveUnavailable(unavailable);
+    }
+    var collections = loadCollections();
+    var collectionsChanged = false;
+    for (var c = 0; c < collections.length; c++) {
+      var items = collections[c].items;
+      if (!Array.isArray(items)) continue;
+      var membership = items.indexOf(itemKey);
+      if (membership >= 0) {
+        items.splice(membership, 1);
+        collectionsChanged = true;
+      }
+    }
+    if (collectionsChanged) saveCollections(collections);
+    return all.length - kept.length;
+  }
+
+  function sanitizeRecord(raw) {
+    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.variants) || !raw.variants.length) return null;
+    var record = JSON.parse(JSON.stringify({
+      name: raw.name,
+      type: raw.type,
+      brand: raw.brand,
+      productCode: raw.productCode,
+      currency: raw.currency,
+      source: raw.source,
+      handle: raw.handle,
+      url: raw.url,
+      image: raw.image,
+      images: raw.images,
+      savedAt: raw.savedAt,
+      variants: raw.variants
+    }));
+    if (!record.name) record.name = record.handle || 'Imported product';
+    if (!record.savedAt) record.savedAt = new Date().toISOString();
+    if (record.currency == null) record.currency = '';
+    var variants = [];
+    for (var i = 0; i < record.variants.length; i++) {
+      var v = record.variants[i];
+      if (!v || typeof v !== 'object' || v.price == null || isNaN(Number(v.price))) continue;
+      variants.push(v);
+    }
+    if (!variants.length) return null;
+    record.variants = variants;
+    return record;
+  }
+
+  function recordsFromImport(data) {
+    if (Array.isArray(data)) return data;
+    if (data && Array.isArray(data.products)) return data.products;
+    if (data && Array.isArray(data.variants)) return [data];
+    return null;
+  }
+
+  function mergeImport(text) {
+    var data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      return { error: 'not valid JSON' };
+    }
+    var incoming = recordsFromImport(data);
+    if (!incoming) {
+      return { error: 'no product records found (use a saved JSON export)' };
+    }
+    var all = loadAll();
+    var index = {};
+    function indexRecord(record, at) {
+      var keys = listingKeys(record);
+      for (var k = 0; k < keys.length; k++) index[keys[k]] = at;
+    }
+    for (var i = 0; i < all.length; i++) indexRecord(all[i], i);
+    var result = { added: 0, updated: 0, skipped: 0, total: 0 };
+    for (var j = 0; j < incoming.length; j++) {
+      var record = sanitizeRecord(incoming[j]);
+      if (!record) { result.skipped++; continue; }
+      var keys = listingKeys(record);
+      var matchIndex = -1;
+      for (var mk = 0; mk < keys.length; mk++) {
+        if (index[keys[mk]] !== undefined) {
+          matchIndex = index[keys[mk]];
+          break;
+        }
+      }
+      if (matchIndex >= 0) {
+        var existing = all[matchIndex];
+        if (String(record.savedAt || '') >= String(existing.savedAt || '')) {
+          var mergedKeys = listingKeys(existing).concat(keys);
+          all[matchIndex] = record;
+          for (var rk = 0; rk < mergedKeys.length; rk++) index[mergedKeys[rk]] = matchIndex;
+          result.updated++;
+        } else {
+          result.skipped++;
+        }
+      } else {
+        all.push(record);
+        indexRecord(record, all.length - 1);
+        result.added++;
+      }
+    }
+    saveAll(all);
+    if (data && data.priority && typeof data.priority === 'object') {
+      var priority = loadPriority();
+      for (var pk in data.priority) {
+        if (!hasOwn(data.priority, pk)) continue;
+        var qualified = qualifyKey(pk);
+        var score = Number(data.priority[pk]) || 0;
+        if (score > (Number(priority[qualified]) || 0)) priority[qualified] = score;
+      }
+      savePriority(priority);
+    }
+    if (data && data.unavailable && typeof data.unavailable === 'object') {
+      var unavailable = loadUnavailable();
+      for (var uk in data.unavailable) {
+        if (hasOwn(data.unavailable, uk) && data.unavailable[uk]) unavailable[qualifyKey(uk)] = true;
+      }
+      saveUnavailable(unavailable);
+    }
+    if (data && Array.isArray(data.collections)) {
+      var collections = loadCollections();
+      for (var ci = 0; ci < data.collections.length; ci++) {
+        var incomingCollection = data.collections[ci];
+        if (!incomingCollection || !incomingCollection.name) continue;
+        var target = null;
+        for (var cj = 0; cj < collections.length; cj++) {
+          if (String(collections[cj].name || '').toLowerCase() === String(incomingCollection.name).toLowerCase()) {
+            target = collections[cj];
+            break;
+          }
+        }
+        if (!target) {
+          target = {
+            id: incomingCollection.id || ('set-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)),
+            name: incomingCollection.name,
+            items: []
+          };
+          collections.push(target);
+        }
+        if (!Array.isArray(target.items)) target.items = [];
+        var incomingItems = Array.isArray(incomingCollection.items) ? incomingCollection.items : [];
+        for (var ii = 0; ii < incomingItems.length; ii++) {
+          if (target.items.indexOf(incomingItems[ii]) < 0) target.items.push(incomingItems[ii]);
+        }
+      }
+      saveCollections(collections);
+    }
+    if (data && Array.isArray(data.outfits)) {
+      var outfits = loadOutfits();
+      for (var oi = 0; oi < data.outfits.length; oi++) {
+        var incomingOutfit = data.outfits[oi];
+        if (!incomingOutfit || !incomingOutfit.name) continue;
+        var duplicate = false;
+        for (var oj = 0; oj < outfits.length; oj++) {
+          if (String(outfits[oj].name || '').toLowerCase() === String(incomingOutfit.name).toLowerCase()) {
+            duplicate = true;
+            break;
+          }
+        }
+        if (!duplicate) outfits.push(incomingOutfit);
+      }
+      saveOutfits(outfits);
+    }
+    result.total = all.length;
+    return result;
+  }
+
+  function pickImportFile(onDone) {
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+    input.addEventListener('change', function () {
+      var file = input.files && input.files[0];
+      if (input.parentNode) input.parentNode.removeChild(input);
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function () { onDone(String(reader.result || '')); };
+      reader.onerror = function () { toast('Could not read import file', true); };
+      reader.readAsText(file);
+    });
+    input.click();
+  }
+
+  function copyFallback(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try {
+      ok = document.execCommand('copy');
+    } catch (e) {}
+    if (ta.parentNode) ta.parentNode.removeChild(ta);
+    return ok;
+  }
+
+  function copyText(text) {
+    if (typeof GM_setClipboard === 'function') {
+      try {
+        GM_setClipboard(text);
+        return Promise.resolve(true);
+      } catch (e) {}
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(
+        function () { return true; },
+        function () { return copyFallback(text); }
+      );
+    }
+    return Promise.resolve(copyFallback(text));
+  }
+
+  function download(filename, text, mime) {
+    try {
+      var blob = new Blob([text], { type: mime || 'application/json' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      if (a.parentNode) a.parentNode.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function fetchJson(url) {
+    return new Promise(function (resolve, reject) {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', url, true);
+      xhr.onreadystatechange = function () {
+        if (xhr.readyState !== 4) return;
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText));
+          } catch (e) {
+            reject(e);
+          }
+        } else {
+          reject(new Error('HTTP ' + xhr.status));
+        }
+      };
+      xhr.onerror = function () { reject(new Error('network error')); };
+      xhr.send();
+    });
+  }
+
+  function detectCurrency() {
+    var scripts = document.querySelectorAll('script[type="application/ld+json"]');
