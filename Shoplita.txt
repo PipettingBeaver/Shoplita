@@ -2398,3 +2398,603 @@
         groups[key] = row;
         order.push(key);
       } else if (betterSummaryRow(row, groups[key])) {
+        groups[key] = row;
+      }
+    }
+    var out = [];
+    for (var j = 0; j < order.length; j++) out.push(groups[order[j]]);
+    return out;
+  }
+
+  function collapseListingRows(rows) {
+    var groups = {};
+    var order = [];
+    for (var i = 0; i < rows.length; i++) {
+      var key = recordItemKey(rows[i]);
+      if (!groups[key]) {
+        groups[key] = { row: rows[i], colors: 1 };
+        order.push(key);
+      } else {
+        groups[key].colors++;
+        if (betterSummaryRow(rows[i], groups[key].row)) groups[key].row = rows[i];
+      }
+    }
+    var out = [];
+    for (var j = 0; j < order.length; j++) {
+      var entry = groups[order[j]];
+      entry.row.colorCount = entry.colors;
+      out.push(entry.row);
+    }
+    return out;
+  }
+
+  function summaryMatrix(products) {
+    return matrixFromRows(buildSummaryRows(products));
+  }
+
+  function historyMatrix(products) {
+    var header = ['Product', 'Source', 'Piece', 'Color', 'Size', 'Price', 'Currency', 'In stock', 'Saved at'];
+    var rows = [];
+    for (var i = 0; i < products.length; i++) {
+      var product = products[i];
+      var source = product.source || '42lolita.com';
+      var variantById = {};
+      var currentVariants = product.variants || [];
+      for (var v = 0; v < currentVariants.length; v++) {
+        variantById[String(currentVariants[v].id != null ? currentVariants[v].id : (currentVariants[v].variantTitle || ''))] = currentVariants[v];
+      }
+      var timeline = Array.isArray(product.history) ? product.history.slice() : [];
+      timeline.push(compactSnapshot(product));
+      for (var t = 0; t < timeline.length; t++) {
+        var snapshot = timeline[t];
+        var snapshotVariants = snapshot.variants || [];
+        for (var s = 0; s < snapshotVariants.length; s++) {
+          var variant = snapshotVariants[s];
+          var meta = variantById[String(variant.id)] || {};
+          rows.push([
+            product.name,
+            source,
+            meta.piece || meta.variantTitle || '',
+            meta.color || '',
+            meta.size || '',
+            Number(variant.price || 0).toFixed(2),
+            snapshot.currency || product.currency || '',
+            variant.available ? 'yes' : 'no',
+            snapshot.savedAt || ''
+          ]);
+        }
+      }
+    }
+    return { header: header, rows: rows };
+  }
+
+  function toHistoryTsv(products) {
+    var matrix = historyMatrix(products);
+    return rowsToTsv(matrix.header, matrix.rows);
+  }
+
+  function downloadPriceHistoryCsv(products) {
+    var stamp = new Date().toISOString().slice(0, 10);
+    var matrix = historyMatrix(products);
+    return download('shoplita-price-history-' + stamp + '.csv', toCsv(matrix.header, matrix.rows), 'text/csv;charset=utf-8');
+  }
+
+  function toSummaryTsv(products) {
+    var matrix = summaryMatrix(products);
+    return rowsToTsv(matrix.header, matrix.rows);
+  }
+
+  function downloadSummaryCsv(products) {
+    var stamp = new Date().toISOString().slice(0, 10);
+    var matrix = summaryMatrix(products);
+    return download('shoplita-wishlist-' + stamp + '.csv', toCsv(matrix.header, matrix.rows), 'text/csv;charset=utf-8');
+  }
+
+  var savedPanelEl = null;
+  var savedPanelBody = null;
+  var savedPanelStatus = null;
+  var savedPanelCollections = null;
+  var savedPanelOutfits = null;
+  var savedPanelTarget = null;
+  var savedFilter = { text: '', max: null, inStock: false, collection: null };
+
+  function savedRowEl(row) {
+    var wrap = document.createElement('div');
+    wrap.style.cssText = 'padding:8px 10px;border-bottom:1px solid #eee;';
+    var title = document.createElement('div');
+    title.style.cssText = 'display:flex;justify-content:space-between;gap:8px;align-items:baseline;';
+    var link = document.createElement('a');
+    link.href = row.url || '#';
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = row.name;
+    link.style.cssText = 'color:#c94f86;font-weight:600;text-decoration:none;';
+    var price = document.createElement('span');
+    price.textContent = (row.currency ? row.currency + ' ' : '') + row.total.toFixed(2);
+    price.style.cssText = 'font-weight:700;white-space:nowrap;';
+    title.appendChild(link);
+    if (isLiked(row)) {
+      var badge = document.createElement('span');
+      badge.textContent = 'Liked';
+      badge.style.cssText = 'color:#c94f86;font-weight:700;white-space:nowrap;';
+      title.appendChild(badge);
+    }
+    title.appendChild(price);
+
+    var metaBits = [];
+    if (row.type === 'bundle' && row.set) metaBits.push('Bundle: ' + row.set);
+    else if (row.color) metaBits.push('Color: ' + row.color);
+    if (row.colorCount > 1) metaBits.push(row.colorCount + ' colors');
+    metaBits.push(row.available ? 'in stock' : 'out of stock');
+    if (isMarkedUnavailable(row)) metaBits.push('marked unavailable');
+    if (row.priceMin != null && row.priceMax > row.priceMin) {
+      metaBits.push('range ' + (row.currency ? row.currency + ' ' : '') +
+        Number(row.priceMin).toFixed(2) + '\u2013' + Number(row.priceMax).toFixed(2));
+    }
+    if (row.historyCount > 0) metaBits.push(row.historyCount + ' snapshot(s)');
+    if ((row.source || '42lolita.com') !== '42lolita.com') metaBits.push(row.source);
+    if (!row.complete && row.missing.length) metaBits.push('missing: ' + row.missing.join(', '));
+    if (row.savedAt) metaBits.push(String(row.savedAt).slice(0, 10));
+    var meta = document.createElement('div');
+    meta.style.cssText = 'color:#666;margin-top:2px;';
+    meta.textContent = metaBits.join(' \u00b7 ');
+
+    var names = [];
+    for (var pieceName in row.pieces) {
+      if (!hasOwn(row.pieces, pieceName)) continue;
+      var piece = row.pieces[pieceName];
+      names.push(piece && piece.price != null ? pieceName + ' ' + Number(piece.price).toFixed(2) : pieceName);
+    }
+    var pieces = document.createElement('div');
+    pieces.style.cssText = 'color:#444;margin-top:2px;';
+    pieces.textContent = names.join(' + ');
+
+    var actions = document.createElement('div');
+    actions.style.cssText = 'margin-top:4px;text-align:right;';
+    var memberships = collectionsForItem(recordItemKey(row));
+    var setSelect = document.createElement('select');
+    setSelect.setAttribute('aria-label', 'Add to set');
+    setSelect.style.cssText = 'font-size:11px;padding:2px 4px;border:1px solid ' +
+      (memberships.length ? '#c94f86' : '#999') + ';border-radius:6px;margin-right:6px;max-width:140px;' +
+      (memberships.length ? 'color:#c94f86;font-weight:600;' : '');
+    var setDisplay = document.createElement('option');
+    setDisplay.value = '__display__';
+    var membershipNames = [];
+    for (var mn = 0; mn < memberships.length; mn++) membershipNames.push(memberships[mn].name);
+    setDisplay.textContent = membershipNames.length ? membershipNames.join(', ') : 'Set\u2026';
+    setDisplay.selected = true;
+    setSelect.appendChild(setDisplay);
+    var allCollections = loadCollections();
+    for (var sci = 0; sci < allCollections.length; sci++) {
+      var setOption = document.createElement('option');
+      setOption.value = allCollections[sci].id;
+      var isMember = false;
+      for (var mi = 0; mi < memberships.length; mi++) {
+        if (memberships[mi].id === allCollections[sci].id) isMember = true;
+      }
+      setOption.textContent = (isMember ? '\u2713 ' : '') + allCollections[sci].name;
+      setSelect.appendChild(setOption);
+    }
+    var newSetOption = document.createElement('option');
+    newSetOption.value = '__new__';
+    newSetOption.textContent = '+ New set\u2026';
+    setSelect.appendChild(newSetOption);
+    setSelect.addEventListener('change', function () {
+      if (setSelect.value === '__new__') {
+        var name = window.prompt('New set name');
+        if (name) {
+          var created = createCollection(name);
+          if (created) {
+            toggleCollectionItem(created.id, recordItemKey(row));
+            toast('Saved to "' + created.name + '"!');
+          }
+        }
+      } else if (setSelect.value && setSelect.value !== '__display__') {
+        var added = toggleCollectionItem(setSelect.value, recordItemKey(row));
+        var collection = findCollection(setSelect.value);
+        var collectionName = collection ? collection.name : 'set';
+        toast(added ? 'Saved to "' + collectionName + '"!' : 'Removed from "' + collectionName + '"');
+      }
+      setSelect.value = '__display__';
+      renderSavedPanel();
+    });
+    var like = document.createElement('button');
+    like.type = 'button';
+    like.textContent = 'I like this!';
+    like.style.cssText = 'cursor:pointer;font-size:11px;padding:2px 8px;border:1px solid #c94f86;background:#fff;color:#c94f86;border-radius:6px;margin-right:6px;font-weight:600;';
+    like.addEventListener('click', function () {
+      animate(like, 'shoplita-anim-like');
+      likeItem(row);
+      toast('Liked!');
+      setTimeout(refreshStatus, 460);
+    });
+    var compare = document.createElement('button');
+    compare.type = 'button';
+    compare.textContent = 'Compare';
+    compare.style.cssText = 'cursor:pointer;font-size:11px;padding:2px 8px;border:1px solid #777;background:#fff;color:#555;border-radius:6px;margin-right:6px;';
+    compare.addEventListener('click', function () {
+      compareAddByHandle(recordItemKey(row));
+    });
+    var remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = 'Remove';
+    remove.style.cssText = 'cursor:pointer;font-size:11px;padding:2px 8px;border:1px solid #cc2b2b;background:#fff;color:#cc2b2b;border-radius:6px;';
+    remove.addEventListener('click', function () {
+      if (!confirm('Remove "' + row.name + '" from saved items?')) return;
+      removeItemGroup(recordItemKey(row));
+      refreshStatus();
+    });
+    actions.appendChild(setSelect);
+    actions.appendChild(like);
+    actions.appendChild(compare);
+    actions.appendChild(remove);
+
+    wrap.appendChild(title);
+    wrap.appendChild(meta);
+    if (names.length) wrap.appendChild(pieces);
+    wrap.appendChild(actions);
+    return wrap;
+  }
+
+  function collectionChipStyle(active) {
+    return 'cursor:pointer;font-size:11px;padding:2px 8px;border-radius:10px;border:1px solid ' +
+      (active ? '#c94f86' : '#ccc') + ';background:' + (active ? '#e6659b' : '#fff') +
+      ';color:' + (active ? '#fff' : '#555') + ';';
+  }
+
+  function renderCollectionsBar() {
+    if (!savedPanelCollections) return;
+    while (savedPanelCollections.firstChild) savedPanelCollections.removeChild(savedPanelCollections.firstChild);
+    var allChip = document.createElement('button');
+    allChip.type = 'button';
+    allChip.textContent = 'All items';
+    allChip.style.cssText = collectionChipStyle(!savedFilter.collection);
+    allChip.addEventListener('click', function () {
+      savedFilter.collection = null;
+      renderSavedPanel();
+    });
+    savedPanelCollections.appendChild(allChip);
+    var collections = loadCollections();
+    for (var i = 0; i < collections.length; i++) {
+      (function (collection) {
+        var wrap = document.createElement('span');
+        wrap.style.cssText = 'display:inline-flex;align-items:center;';
+        var chip = document.createElement('button');
+        chip.type = 'button';
+        chip.textContent = collection.name + ' (' + (Array.isArray(collection.items) ? collection.items.length : 0) + ')';
+        chip.style.cssText = collectionChipStyle(savedFilter.collection === collection.id);
+        chip.addEventListener('click', function () {
+          savedFilter.collection = collection.id;
+          renderSavedPanel();
+        });
+        var remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = '\u00d7';
+        remove.setAttribute('aria-label', 'Delete set ' + collection.name);
+        remove.style.cssText = 'margin-left:2px;border:none;background:none;color:#999;cursor:pointer;font-size:11px;';
+        remove.addEventListener('click', function (event) {
+          if (event && event.stopPropagation) event.stopPropagation();
+          if (!confirm('Delete set "' + collection.name + '"?')) return;
+          deleteCollection(collection.id);
+          if (savedFilter.collection === collection.id) savedFilter.collection = null;
+          renderSavedPanel();
+        });
+        wrap.appendChild(chip);
+        wrap.appendChild(remove);
+        savedPanelCollections.appendChild(wrap);
+      })(collections[i]);
+    }
+    var addChip = document.createElement('button');
+    addChip.type = 'button';
+    addChip.textContent = '+ New set';
+    addChip.style.cssText = collectionChipStyle(false);
+    addChip.addEventListener('click', function () {
+      var name = window.prompt('New set name');
+      if (!name) return;
+      createCollection(name);
+      renderSavedPanel();
+    });
+    savedPanelCollections.appendChild(addChip);
+  }
+
+  function renderOutfitsBar() {
+    if (!savedPanelOutfits) return;
+    while (savedPanelOutfits.firstChild) savedPanelOutfits.removeChild(savedPanelOutfits.firstChild);
+    var outfits = loadOutfits();
+    savedPanelOutfits.style.display = outfits.length ? 'flex' : 'none';
+    if (!outfits.length) return;
+    var label = document.createElement('div');
+    label.textContent = 'Saved outfits';
+    label.style.cssText = 'font-size:10px;font-weight:700;color:#666;text-transform:uppercase;letter-spacing:.5px;';
+    savedPanelOutfits.appendChild(label);
+    for (var i = 0; i < outfits.length; i++) {
+      (function (outfit) {
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;';
+        var name = document.createElement('span');
+        name.textContent = outfit.name + ' \u00b7 ' + (Array.isArray(outfit.pieces) ? outfit.pieces.length : 0) + ' piece(s)';
+        name.style.cssText = 'flex:1;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        var total = document.createElement('span');
+        total.textContent = (outfit.currency ? outfit.currency + ' ' : '') + Number(outfit.total || 0).toFixed(2);
+        total.style.cssText = 'font-weight:700;white-space:nowrap;';
+        var compare = document.createElement('button');
+        compare.type = 'button';
+        compare.textContent = 'Compare';
+        compare.style.cssText = 'cursor:pointer;font-size:10px;padding:1px 6px;border:1px solid #777;background:#fff;color:#555;border-radius:6px;';
+        compare.addEventListener('click', function () {
+          var record = outfitRecord(outfit);
+          if (!record) return;
+          setCompareSide('A', record);
+          openComparePanel();
+        });
+        var remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = '\u00d7';
+        remove.setAttribute('aria-label', 'Delete outfit ' + outfit.name);
+        remove.style.cssText = 'border:none;background:none;color:#999;cursor:pointer;font-size:12px;';
+        remove.addEventListener('click', function () {
+          if (!confirm('Delete outfit "' + outfit.name + '"?')) return;
+          deleteOutfit(outfit.id);
+          renderOutfitsBar();
+        });
+        row.appendChild(name);
+        row.appendChild(total);
+        row.appendChild(compare);
+        row.appendChild(remove);
+        savedPanelOutfits.appendChild(row);
+      })(outfits[i]);
+    }
+  }
+
+  function renderTargetSetBar() {
+    if (!savedPanelTarget) return;
+    while (savedPanelTarget.firstChild) savedPanelTarget.removeChild(savedPanelTarget.firstChild);
+    var label = document.createElement('label');
+    label.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;color:#555;';
+    label.textContent = 'Add new items to:';
+    var select = document.createElement('select');
+    select.setAttribute('aria-label', 'Add new items to set');
+    select.style.cssText = 'flex:1;padding:2px 6px;border:1px solid #ccc;border-radius:6px;font-size:11px;';
+    var none = document.createElement('option');
+    none.value = '';
+    none.textContent = 'No set';
+    select.appendChild(none);
+    var collections = loadCollections();
+    for (var i = 0; i < collections.length; i++) {
+      var option = document.createElement('option');
+      option.value = collections[i].id;
+      option.textContent = 'Set: ' + collections[i].name;
+      select.appendChild(option);
+    }
+    var newOption = document.createElement('option');
+    newOption.value = '__new__';
+    newOption.textContent = '+ New set\u2026';
+    select.appendChild(newOption);
+    select.value = getDefaultSetId() || '';
+    select.addEventListener('change', function () {
+      if (select.value === '__new__') {
+        var name = window.prompt('New set name');
+        if (name) {
+          var created = createCollection(name);
+          if (created) setDefaultSetId(created.id);
+        } else {
+          setDefaultSetId(null);
+        }
+      } else {
+        setDefaultSetId(select.value || null);
+      }
+      renderSavedPanel();
+    });
+    label.appendChild(select);
+    savedPanelTarget.appendChild(label);
+
+    var sortRow = document.createElement('div');
+    sortRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:4px;font-size:11px;color:#555;';
+    var sortLabel = document.createElement('span');
+    sortLabel.textContent = 'Sort by:';
+    var sortBtn = document.createElement('button');
+    sortBtn.type = 'button';
+    sortBtn.className = 'shoplita-focus';
+    sortBtn.textContent = getSortBy() === 'priority' ? 'Priority' : 'Recently added';
+    sortBtn.setAttribute('aria-label', 'Toggle saved items sorting');
+    sortBtn.style.cssText = 'cursor:pointer;font-size:11px;padding:2px 8px;border:1px solid #999;background:#fff;color:#555;border-radius:10px;';
+    sortBtn.addEventListener('click', function () {
+      setSortBy(getSortBy() === 'priority' ? 'recent' : 'priority');
+      renderSavedPanel();
+    });
+    sortRow.appendChild(sortLabel);
+    sortRow.appendChild(sortBtn);
+    savedPanelTarget.appendChild(sortRow);
+  }
+
+  function renderSavedPanel() {
+    if (!savedPanelBody) return;
+    renderOutfitsBar();
+    renderTargetSetBar();
+    renderCollectionsBar();
+    var rows = collapseListingRows(buildSummaryRows(loadAll()));
+    var collectionFilter = null;
+    if (savedFilter.collection) {
+      var allCollections = loadCollections();
+      for (var cf = 0; cf < allCollections.length; cf++) {
+        if (allCollections[cf].id === savedFilter.collection) collectionFilter = allCollections[cf];
+      }
+      if (!collectionFilter) savedFilter.collection = null;
+    }
+    var filtered = [];
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      if (savedFilter.inStock && !row.available) continue;
+      if (collectionFilter && (collectionFilter.items || []).indexOf(recordItemKey(row)) < 0) continue;
+      if (savedFilter.max != null && Number(row.total) > savedFilter.max) continue;
+      if (savedFilter.text) {
+        var hay = (row.name + ' ' + (row.color || '') + ' ' + (row.set || '') + ' ' + Object.keys(row.pieces).join(' ')).toLowerCase();
+        if (hay.indexOf(savedFilter.text) < 0) continue;
+      }
+      filtered.push(row);
+    }
+    var sortBy = getSortBy();
+    function byRecency(a, b) {
+      var aDate = String(a.savedAt || '');
+      var bDate = String(b.savedAt || '');
+      if (aDate !== bDate) return aDate < bDate ? 1 : -1;
+      return Number(a.total) - Number(b.total);
+    }
+    var priorityRows = [];
+    var otherRows = [];
+    var likedCount = 0;
+    for (var lc = 0; lc < filtered.length; lc++) {
+      if (priorityScore(filtered[lc]) > 0) likedCount++;
+    }
+    if (sortBy === 'priority') {
+      for (var f = 0; f < filtered.length; f++) {
+        if (priorityScore(filtered[f]) > 0) priorityRows.push(filtered[f]);
+        else otherRows.push(filtered[f]);
+      }
+      priorityRows.sort(function (a, b) {
+        var diff = priorityScore(b) - priorityScore(a);
+        if (diff) return diff;
+        return byRecency(a, b);
+      });
+      otherRows.sort(byRecency);
+    } else {
+      filtered.sort(byRecency);
+    }
+    while (savedPanelBody.firstChild) savedPanelBody.removeChild(savedPanelBody.firstChild);
+    function addSection(title, sectionRows) {
+      var head = document.createElement('div');
+      head.textContent = title;
+      head.style.cssText = 'padding:6px 10px;background:#f6f6f6;font-weight:700;color:#555;text-transform:uppercase;font-size:10px;letter-spacing:.5px;';
+      savedPanelBody.appendChild(head);
+      for (var s = 0; s < sectionRows.length; s++) savedPanelBody.appendChild(savedRowEl(sectionRows[s]));
+    }
+    if (!filtered.length) {
+      var empty = document.createElement('div');
+      empty.textContent = rows.length ? 'No saved items match the filters.' : 'Nothing saved yet.';
+      empty.style.cssText = 'padding:12px;color:#888;';
+      savedPanelBody.appendChild(empty);
+    } else if (sortBy === 'priority') {
+      if (priorityRows.length) addSection('Priority', priorityRows);
+      if (otherRows.length) addSection(priorityRows.length ? 'All items' : 'Items', otherRows);
+    } else {
+      for (var r2 = 0; r2 < filtered.length; r2++) savedPanelBody.appendChild(savedRowEl(filtered[r2]));
+    }
+    if (savedPanelStatus) {
+      var keys = {};
+      for (var k = 0; k < filtered.length; k++) keys[recordItemKey(filtered[k])] = true;
+      savedPanelStatus.textContent = filtered.length + ' outfit row(s) \u00b7 ' + Object.keys(keys).length + ' saved item(s)' +
+        (likedCount ? ' \u00b7 ' + likedCount + ' priority' : '');
+    }
+  }
+
+  function buildSavedPanel() {
+    var panel = document.createElement('div');
+    panel.className = 'shoplita-panel';
+    panel.style.cssText =
+      'display:none;flex-direction:column;position:fixed;right:16px;top:16px;bottom:200px;width:400px;max-width:calc(100vw - 32px);' +
+      'background:#fff;color:#222;border:1px solid #ddd;border-radius:10px;z-index:999998;' +
+      'overflow:hidden;box-shadow:0 4px 18px rgba(0,0,0,.25);font:12px/1.4 sans-serif;';
+
+    var head = document.createElement('div');
+    head.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid #eee;';
+    var heading = document.createElement('strong');
+    heading.textContent = 'Saved items';
+    var close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '\u00d7';
+    close.setAttribute('aria-label', 'Close saved items');
+    close.style.cssText = 'cursor:pointer;border:none;background:none;font-size:18px;line-height:1;';
+    close.addEventListener('click', function () { panel.style.display = 'none'; });
+    var about = document.createElement('button');
+    about.type = 'button';
+    about.className = 'shoplita-focus';
+    about.textContent = 'About';
+    about.setAttribute('aria-label', 'About Shoplita');
+    about.setAttribute('aria-expanded', 'false');
+    about.style.cssText = 'cursor:pointer;border:none;background:none;color:#c94f86;font-size:11px;font-weight:600;';
+    about.addEventListener('click', function () {
+      var open = aboutBar.style.display !== 'flex';
+      aboutBar.style.display = open ? 'flex' : 'none';
+      about.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    var headRight = document.createElement('div');
+    headRight.style.cssText = 'display:flex;align-items:center;gap:8px;';
+    headRight.appendChild(about);
+    headRight.appendChild(close);
+    head.appendChild(heading);
+    head.appendChild(headRight);
+
+    var filters = document.createElement('div');
+    filters.style.cssText = 'display:flex;gap:6px;align-items:center;padding:8px 10px;border-bottom:1px solid #eee;flex-wrap:wrap;';
+    var search = document.createElement('input');
+    search.type = 'search';
+    search.placeholder = 'search name / piece';
+    search.setAttribute('aria-label', 'Search saved items');
+    search.style.cssText = 'flex:1;min-width:120px;padding:4px 6px;border:1px solid #ccc;border-radius:6px;';
+    var max = document.createElement('input');
+    max.type = 'number';
+    max.min = '0';
+    max.placeholder = 'max price';
+    max.setAttribute('aria-label', 'Maximum price');
+    max.style.cssText = 'width:84px;padding:4px 6px;border:1px solid #ccc;border-radius:6px;';
+    var stockLabel = document.createElement('label');
+    stockLabel.style.cssText = 'display:flex;gap:4px;align-items:center;white-space:nowrap;';
+    var stockBox = document.createElement('input');
+    stockBox.type = 'checkbox';
+    stockLabel.appendChild(stockBox);
+    stockLabel.appendChild(document.createTextNode('in stock only'));
+    search.addEventListener('input', function () {
+      savedFilter.text = search.value.trim().toLowerCase();
+      renderSavedPanel();
+    });
+    max.addEventListener('input', function () {
+      var limit = parseFloat(max.value);
+      savedFilter.max = isNaN(limit) ? null : limit;
+      renderSavedPanel();
+    });
+    stockBox.addEventListener('change', function () {
+      savedFilter.inStock = stockBox.checked;
+      renderSavedPanel();
+    });
+    filters.appendChild(search);
+    filters.appendChild(max);
+    filters.appendChild(stockLabel);
+
+    var body = document.createElement('div');
+    body.style.cssText = 'flex:1;overflow:auto;';
+
+    var status = document.createElement('div');
+    status.style.cssText = 'padding:5px 10px;border-top:1px solid #eee;color:#666;background:#fafafa;';
+
+    var targetBar = document.createElement('div');
+    targetBar.style.cssText = 'padding:6px 10px;border-bottom:1px solid #eee;';
+    savedPanelTarget = targetBar;
+    var outfitsBar = document.createElement('div');
+    outfitsBar.style.cssText = 'display:none;flex-direction:column;gap:4px;padding:6px 10px;border-bottom:1px solid #eee;';
+    savedPanelOutfits = outfitsBar;
+    var collectionsBar = document.createElement('div');
+    collectionsBar.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;padding:6px 10px;border-bottom:1px solid #eee;';
+    savedPanelCollections = collectionsBar;
+
+    var aboutBar = document.createElement('div');
+    aboutBar.style.cssText = 'display:none;flex-direction:column;gap:2px;padding:8px 10px;border-bottom:1px solid #eee;background:#fafafa;font-size:11px;color:#444;';
+    var aboutTitle = document.createElement('strong');
+    aboutTitle.textContent = 'Works on:';
+    aboutBar.appendChild(aboutTitle);
+    for (var ai = 0; ai < ADAPTERS.length; ai++) {
+      if (!ADAPTERS[ai].label) continue;
+      var aboutItem = document.createElement('div');
+      aboutItem.textContent = '\u2022 ' + ADAPTERS[ai].label;
+      aboutBar.appendChild(aboutItem);
+    }
+    var aboutNote = document.createElement('div');
+    aboutNote.textContent = 'Import share files from other Shoplita users via Import data.';
+    aboutNote.style.cssText = 'margin-top:4px;color:#666;';
+    aboutBar.appendChild(aboutNote);
+    var aboutVersion = document.createElement('div');
+    var scriptVersion = '';
+    try {
+      scriptVersion = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) ? GM_info.script.version : '';
+    } catch (e) {}
+    aboutVersion.textContent = 'Shoplita' + (scriptVersion ? ' v' + scriptVersion : '');
+    aboutVersion.style.cssText = 'color:#888;';
