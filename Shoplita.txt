@@ -3598,3 +3598,603 @@
     return row;
   }
 
+  function renderCompareSide(side, label) {
+    var col = document.createElement('div');
+    col.style.cssText = 'flex:1 1 280px;min-width:0;display:flex;flex-direction:column;gap:8px;';
+    if (!side) {
+      var empty = document.createElement('div');
+      empty.textContent = 'Item ' + label + ': pick a saved item above.';
+      empty.style.cssText = 'color:#888;padding:20px 0;';
+      col.appendChild(empty);
+      return col;
+    }
+    var record = side.record;
+    var img = document.createElement('img');
+    img.alt = record.name;
+    img.style.cssText = 'width:100%;height:220px;object-fit:contain;background:#f4f4f4;border-radius:8px;';
+    var imageCandidates = [];
+    if (record.image) imageCandidates.push(record.image);
+    if (Array.isArray(record.images)) {
+      for (var ic = 0; ic < record.images.length; ic++) {
+        if (record.images[ic] && imageCandidates.indexOf(record.images[ic]) < 0) imageCandidates.push(record.images[ic]);
+      }
+    }
+    if (imageCandidates.length) {
+      var imageIndex = 0;
+      img.src = imageCandidates[0];
+      img.addEventListener('error', function () {
+        imageIndex++;
+        if (imageIndex < imageCandidates.length) img.src = imageCandidates[imageIndex];
+      });
+    } else {
+      loadCompareImage(record, img);
+    }
+    col.appendChild(img);
+    if (!imageCandidates.length && String(record.source || '').indexOf('aliexpress') === 0) {
+      var imageNote = document.createElement('div');
+      imageNote.textContent = 'No image saved - re-save this listing to capture it.';
+      imageNote.style.cssText = 'color:#999;font-size:10px;text-align:center;';
+      col.appendChild(imageNote);
+    }
+
+    var link = document.createElement('a');
+    link.href = record.url || '#';
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = record.name;
+    link.style.cssText = 'color:#c94f86;font-weight:600;text-decoration:none;';
+    col.appendChild(link);
+
+    var source = record.source || '42lolita.com';
+    if (source.indexOf('shoplita.') !== 0) {
+      var sourceLine = document.createElement('div');
+      sourceLine.style.cssText = 'color:#888;font-size:11px;';
+      sourceLine.textContent = 'Listing from ' + source;
+      col.appendChild(sourceLine);
+    }
+    var range = variantPriceRange(record);
+    if (range.min != null) {
+      var priceLine = document.createElement('div');
+      priceLine.style.cssText = 'color:#666;font-size:11px;';
+      var currencyPrefix = record.currency ? record.currency + ' ' : '';
+      priceLine.textContent = range.max > range.min
+        ? 'Price range: ' + currencyPrefix + range.min.toFixed(2) + '\u2013' + range.max.toFixed(2)
+        : 'Price: ' + currencyPrefix + range.min.toFixed(2);
+      col.appendChild(priceLine);
+    }
+    var historyCount = Array.isArray(record.history) ? record.history.length : 0;
+    if (historyCount > 0) {
+      var historyLine = document.createElement('div');
+      historyLine.style.cssText = 'color:#888;font-size:11px;';
+      historyLine.textContent = 'Price history: ' + historyCount + ' snapshot(s)';
+      col.appendChild(historyLine);
+    }
+
+    var likeRow = document.createElement('div');
+    likeRow.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
+    var like = document.createElement('button');
+    like.type = 'button';
+    like.textContent = 'I like this!';
+    like.style.cssText = 'cursor:pointer;font-size:12px;padding:4px 10px;border:1px solid #c94f86;background:#fff;color:#c94f86;border-radius:12px;font-weight:600;';
+    like.addEventListener('click', function () {
+      animate(like, 'shoplita-anim-like');
+      likeItem(record);
+      scoreLabel.textContent = isLiked(record) ? 'Liked' : '';
+      toast('Liked!');
+    });
+    var marked = isMarkedUnavailable(record);
+    var mark = document.createElement('button');
+    mark.type = 'button';
+    mark.textContent = marked ? 'Mark as available' : 'Mark as unavailable';
+    mark.setAttribute('aria-pressed', marked ? 'true' : 'false');
+    mark.style.cssText = 'cursor:pointer;font-size:12px;padding:4px 10px;border:1px solid ' +
+      (marked ? '#2e7d32' : '#999') + ';background:#fff;color:' + (marked ? '#2e7d32' : '#555') + ';border-radius:12px;';
+    mark.addEventListener('click', function () {
+      animate(mark, 'shoplita-anim-save');
+      var nowMarked = toggleUnavailable(record);
+      mark.textContent = nowMarked ? 'Mark as available' : 'Mark as unavailable';
+      mark.setAttribute('aria-pressed', nowMarked ? 'true' : 'false');
+      mark.style.borderColor = nowMarked ? '#2e7d32' : '#999';
+      mark.style.color = nowMarked ? '#2e7d32' : '#555';
+      setTimeout(renderCompare, 400);
+    });
+    var viewNext = document.createElement('button');
+    viewNext.type = 'button';
+    viewNext.textContent = 'View next';
+    viewNext.style.cssText = 'cursor:pointer;font-size:12px;padding:4px 10px;border:1px solid #777;background:#fff;color:#555;border-radius:12px;';
+    viewNext.addEventListener('click', function () {
+      var other = label === 'A' ? compareState.b : compareState.a;
+      var candidate = nextAvailableRecord(recordItemKey(record), compareRecordKey(other));
+      if (!candidate) return;
+      setCompareSide(label, candidate);
+      renderCompare();
+    });
+    var scoreLabel = document.createElement('span');
+    scoreLabel.textContent = isLiked(record) ? 'Liked' : '';
+    scoreLabel.style.cssText = 'color:#666;font-size:11px;';
+    likeRow.appendChild(like);
+    likeRow.appendChild(mark);
+    likeRow.appendChild(viewNext);
+    likeRow.appendChild(scoreLabel);
+    col.appendChild(likeRow);
+
+    var chips = document.createElement('div');
+    chips.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;';
+    for (var c = 0; c < side.options.colors.length; c++) {
+      (function (color) {
+        var chip = document.createElement('button');
+        chip.type = 'button';
+        chip.textContent = color || 'default';
+        var active = color === side.color;
+        chip.setAttribute('aria-pressed', active ? 'true' : 'false');
+        chip.style.cssText = 'cursor:pointer;font-size:11px;padding:3px 9px;border-radius:12px;border:1px solid ' +
+          (active ? '#c94f86' : '#ccc') + ';background:' + (active ? '#e6659b' : '#fff') +
+          ';color:' + (active ? '#fff' : '#555') + ';';
+        chip.addEventListener('click', function () {
+          setCompareColor(side, color);
+          renderCompare();
+        });
+        chips.appendChild(chip);
+      })(side.options.colors[c]);
+    }
+    col.appendChild(chips);
+
+    for (var t = 0; t < side.options.types.length; t++) {
+      col.appendChild(renderCompareTypeRow(side, side.options.types[t]));
+    }
+
+    var subtotal = document.createElement('div');
+    subtotal.style.cssText = 'margin-top:auto;padding:8px 10px;border-top:2px solid #eee;background:#fafafa;' +
+      'border-radius:6px;font-weight:700;text-align:right;';
+    subtotal.textContent = 'Item ' + label + ' total: ' + (record.currency ? record.currency + ' ' : '') +
+      sideTotal(side).toFixed(2);
+    col.appendChild(subtotal);
+    return col;
+  }
+
+  function renderCompare() {
+    if (!compareEl) return;
+    while (compareEl.firstChild) compareEl.removeChild(compareEl.firstChild);
+    var records = compareRecords();
+
+    var win = document.createElement('div');
+    win.className = 'shoplita-panel';
+    win.style.cssText = 'background:#fff;color:#222;border-radius:12px;width:min(1100px,96vw);max-height:92vh;' +
+      'display:flex;flex-direction:column;overflow:hidden;font:13px/1.4 sans-serif;box-shadow:0 10px 40px rgba(0,0,0,.4);';
+
+    var head = document.createElement('div');
+    head.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid #eee;flex-wrap:wrap;';
+    var heading = document.createElement('strong');
+    heading.textContent = 'Compare';
+    head.appendChild(heading);
+    head.appendChild(makeCompareSelect('A', records, compareState.a && compareState.a.record, function (record) {
+      setCompareSide('A', record);
+      renderCompare();
+    }));
+    var vs = document.createElement('span');
+    vs.textContent = 'vs';
+    vs.style.cssText = 'color:#888;';
+    head.appendChild(vs);
+    head.appendChild(makeCompareSelect('B', records, compareState.b && compareState.b.record, function (record) {
+      setCompareSide('B', record);
+      renderCompare();
+    }));
+    var rankBtn = document.createElement('button');
+    rankBtn.type = 'button';
+    rankBtn.className = 'shoplita-focus';
+    rankBtn.textContent = 'Rank by: ' + (compareState.rankBy === 'priority' ? 'Priority' : 'Recently added');
+    rankBtn.setAttribute('aria-label', 'Toggle picker ranking');
+    rankBtn.style.cssText = 'cursor:pointer;font-size:11px;padding:3px 8px;border:1px solid #999;background:#fff;color:#555;border-radius:10px;';
+    rankBtn.addEventListener('click', function () {
+      compareState.rankBy = compareState.rankBy === 'priority' ? 'recent' : 'priority';
+      persistCompareState();
+      renderCompare();
+    });
+    head.appendChild(rankBtn);
+    var allCollections = loadCollections();
+    if (allCollections.length) {
+      var setFilter = document.createElement('select');
+      setFilter.setAttribute('aria-label', 'Filter by set');
+      setFilter.style.cssText = 'max-width:180px;padding:3px 6px;border:1px solid #ccc;border-radius:6px;font-size:12px;';
+      var allOption = document.createElement('option');
+      allOption.value = '';
+      allOption.textContent = 'All sets';
+      setFilter.appendChild(allOption);
+      for (var sc = 0; sc < allCollections.length; sc++) {
+        var setChoice = document.createElement('option');
+        setChoice.value = allCollections[sc].id;
+        setChoice.textContent = 'Set: ' + allCollections[sc].name;
+        setFilter.appendChild(setChoice);
+      }
+      setFilter.value = compareState.filterSet || '';
+      setFilter.addEventListener('change', function () {
+        compareState.filterSet = setFilter.value || null;
+        persistCompareState();
+        renderCompare();
+      });
+      head.appendChild(setFilter);
+    }
+    var close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '\u00d7';
+    close.setAttribute('aria-label', 'Close compare');
+    close.style.cssText = 'margin-left:auto;cursor:pointer;border:none;background:none;font-size:20px;line-height:1;';
+    close.addEventListener('click', closeCompare);
+    head.appendChild(close);
+
+    var body = document.createElement('div');
+    body.style.cssText = 'display:flex;gap:12px;padding:12px 14px;overflow:auto;flex:1;flex-wrap:wrap;';
+    body.appendChild(renderCompareSide(compareState.a, 'A'));
+    body.appendChild(renderCompareSide(compareState.b, 'B'));
+
+    var totalA = sideTotal(compareState.a);
+    var totalB = sideTotal(compareState.b);
+    var currencyA = (compareState.a && compareState.a.record && compareState.a.record.currency) || '';
+    var currencyB = (compareState.b && compareState.b.record && compareState.b.record.currency) || '';
+    var currency = currencyA || currencyB || '';
+    var mixedCurrency = !!currencyA && !!currencyB && currencyA !== currencyB;
+    var outfitCurrency = mixedCurrency ? '' : currency;
+    var foot = document.createElement('div');
+    foot.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;border-top:1px solid #eee;background:#fafafa;';
+    var totalEl = document.createElement('strong');
+    totalEl.setAttribute('aria-live', 'polite');
+    totalEl.style.cssText = 'font-size:15px;';
+    totalEl.textContent = mixedCurrency
+      ? 'Combined total: ' + currencyA + ' ' + totalA.toFixed(2) + ' + ' + currencyB + ' ' + totalB.toFixed(2) + ' (no conversion)'
+      : 'Combined total: ' + (currency ? currency + ' ' : '') + (Math.round((totalA + totalB) * 100) / 100).toFixed(2);
+    var parts = document.createElement('span');
+    parts.style.cssText = 'color:#666;';
+    parts.textContent = 'A ' + totalA.toFixed(2) + ' + B ' + totalB.toFixed(2);
+    var saveOutfitBtn = document.createElement('button');
+    saveOutfitBtn.type = 'button';
+    saveOutfitBtn.textContent = 'Save outfit';
+    saveOutfitBtn.style.cssText = 'cursor:pointer;font-size:12px;padding:4px 10px;border:1px solid #c94f86;background:#e6659b;color:#fff;border-radius:8px;font-weight:600;';
+    saveOutfitBtn.addEventListener('click', function () {
+      var pieces = collectComparePieces();
+      if (!pieces.length) { toast('Nothing selected to save', true); return; }
+      var name = window.prompt('Outfit name', 'Outfit ' + new Date().toISOString().slice(0, 10));
+      if (!name) return;
+      var outfit = createOutfit(name, pieces, outfitCurrency);
+      if (!outfit) { toast('Could not save outfit', true); return; }
+      if (savedPanelEl && savedPanelEl.style.display !== 'none') renderOutfitsBar();
+      toast('Saved outfit "' + outfit.name + '" (' + pieces.length + ' pieces, ' + outfit.total.toFixed(2) + ')');
+    });
+    var footRight = document.createElement('div');
+    footRight.style.cssText = 'display:flex;align-items:center;gap:10px;';
+    footRight.appendChild(parts);
+    footRight.appendChild(saveOutfitBtn);
+    foot.appendChild(totalEl);
+    foot.appendChild(footRight);
+
+    win.appendChild(head);
+    win.appendChild(body);
+    win.appendChild(foot);
+    compareEl.appendChild(win);
+  }
+
+  function openComparePanel() {
+    if (!compareEl) {
+      compareEl = document.createElement('div');
+      compareEl.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:999999;' +
+        'display:flex;align-items:center;justify-content:center;';
+      compareEl.addEventListener('click', function (event) {
+        if (event.target === compareEl) closeCompare();
+      });
+      document.body.appendChild(compareEl);
+    }
+    compareEl.style.display = 'flex';
+    restoreCompareState();
+    renderCompare();
+  }
+
+  function variantCount(products) {
+    var n = 0;
+    for (var i = 0; i < products.length; i++) n += products[i].variants.length;
+    return n;
+  }
+
+  var toastEl = null;
+  var toastTimer = null;
+
+  function toast(message, isError) {
+    if (!toastEl) {
+      toastEl = document.createElement('div');
+      toastEl.style.cssText =
+        'position:fixed;right:16px;bottom:130px;z-index:999999;max-width:min(340px,calc(100vw - 32px));' +
+        'padding:10px 14px;border-radius:8px;font:13px/1.4 sans-serif;' +
+        'color:#fff;background:#333;box-shadow:0 2px 10px rgba(0,0,0,.3);' +
+        'opacity:0;transition:opacity .2s;pointer-events:none;';
+      toastEl.setAttribute('role', 'status');
+      toastEl.setAttribute('aria-live', 'polite');
+      document.body.appendChild(toastEl);
+    }
+    toastEl.textContent = message;
+    toastEl.style.background = isError ? '#b3261e' : '#333';
+    toastEl.style.opacity = '1';
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      toastEl.style.opacity = '0';
+    }, 3500);
+  }
+
+  function exportAll(all) {
+    var stamp = new Date().toISOString().slice(0, 10);
+    var setRows = buildSetRows(all);
+    var text = JSON.stringify({
+      exportedAt: new Date().toISOString(),
+      count: all.length,
+      setCount: setRows.length,
+      setRows: setRows,
+      priority: loadPriority(),
+      unavailable: loadUnavailable(),
+      collections: loadCollections(),
+      outfits: loadOutfits(),
+      products: all
+    }, null, 2);
+    if (download('shoplita-saved-info-' + stamp + '.json', text)) {
+      toast('Downloaded ' + all.length + ' product(s)');
+    } else {
+      copyText(text).then(function () {
+        toast('Download not supported, copied JSON to clipboard instead');
+      });
+    }
+  }
+
+  function exportForUserscript(all) {
+    var stamp = new Date().toISOString().slice(0, 10);
+    var text = JSON.stringify({
+      format: 'shoplita',
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      priority: loadPriority(),
+      unavailable: loadUnavailable(),
+      collections: loadCollections(),
+      outfits: loadOutfits(),
+      products: all
+    }, null, 2);
+    if (download('shoplita-share-' + stamp + '.json', text)) {
+      toast('Exported ' + all.length + ' snapshot(s) for another userscript user');
+    } else {
+      copyText(text).then(function () {
+        toast('Download not supported, copied share JSON to clipboard instead');
+      });
+    }
+  }
+
+  function ensureStyles() {
+    try {
+      if (document.getElementById && document.getElementById('shoplita-saveinfo-styles')) return;
+      var style = document.createElement('style');
+      style.id = 'shoplita-saveinfo-styles';
+      style.textContent =
+        '@keyframes shoplita-pop { 0% { transform: scale(1); } 40% { transform: scale(1.14); } 100% { transform: scale(1); } }' +
+        '@keyframes shoplita-like { 0% { transform: scale(1); } 35% { transform: scale(1.25); } 100% { transform: scale(1); } }' +
+        '.shoplita-anim-save { animation: shoplita-pop .35s ease; }' +
+        '.shoplita-anim-like { animation: shoplita-like .45s ease; }' +
+        '.shoplita-focus:focus-visible { outline: 2px solid #c94f86; outline-offset: 2px; }' +
+        '.shoplita-panel button:focus-visible, .shoplita-panel a:focus-visible, .shoplita-panel input:focus-visible, .shoplita-panel select:focus-visible { outline: 2px solid #c94f86; outline-offset: 2px; }' +
+        '@media (prefers-reduced-motion: reduce) { .shoplita-anim-save, .shoplita-anim-like { animation: none; } }';
+      (document.head || document.documentElement || document.body).appendChild(style);
+    } catch (e) {}
+  }
+
+  function animate(el, className) {
+    if (!el || !el.classList) return;
+    el.classList.remove(className);
+    void el.offsetWidth;
+    el.classList.add(className);
+  }
+
+  var refreshStatus = null;
+
+  function buildUi() {
+    ensureStyles();
+    normalizeSources();
+    var panel = document.createElement('div');
+    panel.className = 'shoplita-panel';
+    panel.style.cssText =
+      'position:fixed;right:16px;bottom:16px;z-index:999999;display:flex;' +
+      'flex-direction:column;gap:6px;align-items:flex-end;font:13px/1.4 sans-serif;' +
+      'max-height:calc(100vh - 32px);overflow-y:auto;max-width:calc(100vw - 32px);';
+
+    function makeButton(label, primary, compact) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'shoplita-focus';
+      b.textContent = label;
+      b.style.cssText =
+        'cursor:pointer;border:1px solid ' + (primary ? '#c94f86' : '#999') + ';' +
+        'border-radius:8px;padding:' + (primary ? '10px 18px' : (compact ? '4px 10px' : '6px 12px')) + ';' +
+        'font-size:' + (primary ? '14px' : (compact ? '11px' : '12px')) + ';font-weight:600;color:#fff;' +
+        'background:' + (primary ? '#e6659b' : '#777') + ';' +
+        'box-shadow:0 2px 6px rgba(0,0,0,.25);';
+      b.addEventListener('mouseenter', function () {
+        b.style.filter = 'brightness(1.08)';
+      });
+      b.addEventListener('mouseleave', function () {
+        b.style.filter = '';
+      });
+      return b;
+    }
+
+    var saveBtn = makeButton('Save listing', true);
+    var likePageBtn = makeButton('I like this!', false);
+    var copyAllBtn = makeButton('Copy variants (TSV)', false);
+    var downloadBtn = makeButton('Download JSON backup', false);
+    var copySetsBtn = makeButton('Copy history (TSV)', false);
+    var csvBtn = makeButton('Download history (CSV)', false);
+    var copyWishlistBtn = makeButton('Copy wishlist (TSV)', false);
+    var wishlistBtn = makeButton('Download wishlist (CSV)', false);
+    var copyPriceHistoryBtn = makeButton('Copy price history (TSV)', false);
+    var priceHistoryCsvBtn = makeButton('Download price history (CSV)', false);
+    var shareBtn = makeButton('Export for userscript', false);
+    var importBtn = makeButton('Import data', false);
+    var savedBtn = makeButton('Saved items', false, true);
+    var compareBtn = makeButton('Compare', false, true);
+    var moreBtn = makeButton('More\u2026', false, true);
+    moreBtn.setAttribute('aria-expanded', 'false');
+    moreBtn.setAttribute('aria-controls', 'shoplita-more-menu');
+
+    var onProductPage = !!adapterFor(location.href);
+    if (!onProductPage) {
+      saveBtn.disabled = true;
+      likePageBtn.disabled = true;
+      saveBtn.title = 'Open a product listing to save it';
+      likePageBtn.title = 'Open a product listing to like it';
+      saveBtn.style.opacity = '0.55';
+      likePageBtn.style.opacity = '0.55';
+    } else {
+      var pageHandle = currentPageId();
+      var latest = findLatestByHandle(pageHandle);
+      var today = new Date().toISOString().slice(0, 10);
+      if (latest && String(latest.savedAt || '').slice(0, 10) === today) {
+        saveBtn.textContent = 'Saved';
+        saveBtn.title = 'Click to refresh this saved listing';
+      }
+      if (pageHandle && priorityScore({ handle: pageHandle, source: currentSource() }) > 0) {
+        likePageBtn.textContent = 'Liked';
+        likePageBtn.disabled = true;
+      }
+    }
+
+    var status = document.createElement('span');
+    status.style.cssText =
+      'background:rgba(0,0,0,.65);color:#fff;padding:3px 8px;border-radius:6px;font-size:11px;';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+
+    var minBtn = document.createElement('button');
+    minBtn.type = 'button';
+    minBtn.textContent = '\u2212';
+    minBtn.className = 'shoplita-focus';
+    minBtn.setAttribute('aria-label', 'Minimize panel');
+    minBtn.setAttribute('title', 'Minimize');
+    minBtn.style.cssText = 'cursor:pointer;border:1px solid #999;background:#777;color:#fff;border-radius:6px;padding:2px 9px;font-weight:700;line-height:1;';
+
+    var miniBtn = document.createElement('button');
+    miniBtn.type = 'button';
+    miniBtn.textContent = '+';
+    miniBtn.className = 'shoplita-focus';
+    miniBtn.setAttribute('aria-label', 'Show Shoplita tools');
+    miniBtn.setAttribute('title', 'Show Shoplita tools');
+    miniBtn.style.cssText = 'display:none;position:fixed;right:16px;bottom:16px;z-index:999999;width:42px;height:42px;' +
+      'border-radius:50%;border:1px solid #c94f86;background:#e6659b;color:#fff;font-size:20px;font-weight:700;' +
+      'cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.3);align-items:center;justify-content:center;';
+
+    function setMinimized(minimized) {
+      panel.style.display = minimized ? 'none' : 'flex';
+      miniBtn.style.display = minimized ? 'flex' : 'none';
+      var ui = loadUi();
+      ui.minimized = !!minimized;
+      saveUi(ui);
+    }
+    minBtn.addEventListener('click', function () { setMinimized(true); });
+    miniBtn.addEventListener('click', function () { setMinimized(false); });
+
+    refreshStatus = function () {
+      var all = loadAll();
+      var setCount = buildSetRows(all).length;
+      var full = all.length + ' snapshot(s), ' + variantCount(all) + ' variant(s), ' + setCount + ' set row(s)';
+      status.textContent = all.length + ' items \u00b7 ' + setCount + ' sets';
+      status.title = full;
+      status.setAttribute('aria-label', full);
+      if (savedPanelEl && savedPanelEl.style.display !== 'none') renderSavedPanel();
+    };
+
+    var topRow = document.createElement('div');
+    topRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;';
+    topRow.appendChild(saveBtn);
+    topRow.appendChild(likePageBtn);
+
+    var secondaryRow = document.createElement('div');
+    secondaryRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;';
+    secondaryRow.appendChild(savedBtn);
+    secondaryRow.appendChild(compareBtn);
+    secondaryRow.appendChild(moreBtn);
+
+    var moreBox = document.createElement('div');
+    moreBox.id = 'shoplita-more-menu';
+    moreBox.style.cssText = 'display:none;flex-direction:column;gap:6px;padding:8px;border:1px solid #ccc;border-radius:8px;background:rgba(255,255,255,.96);';
+    moreBox.setAttribute('role', 'group');
+    moreBox.setAttribute('aria-label', 'More options');
+
+    var importRow = document.createElement('div');
+    importRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
+    importRow.appendChild(importBtn);
+
+    var exportLabel = document.createElement('div');
+    exportLabel.textContent = 'Export';
+    exportLabel.style.cssText = 'font-size:10px;font-weight:700;color:#666;text-transform:uppercase;letter-spacing:.5px;';
+
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
+    row.appendChild(copyAllBtn);
+    row.appendChild(downloadBtn);
+    var row2 = document.createElement('div');
+    row2.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
+    row2.appendChild(copySetsBtn);
+    row2.appendChild(csvBtn);
+    var row3 = document.createElement('div');
+    row3.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
+    row3.appendChild(copyWishlistBtn);
+    row3.appendChild(wishlistBtn);
+    var row4 = document.createElement('div');
+    row4.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
+    row4.appendChild(shareBtn);
+    var row5 = document.createElement('div');
+    row5.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
+    row5.appendChild(copyPriceHistoryBtn);
+    row5.appendChild(priceHistoryCsvBtn);
+    moreBox.appendChild(importRow);
+    moreBox.appendChild(exportLabel);
+    moreBox.appendChild(row);
+    moreBox.appendChild(row2);
+    moreBox.appendChild(row3);
+    moreBox.appendChild(row4);
+    moreBox.appendChild(row5);
+
+    var statusRow = document.createElement('div');
+    statusRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
+    statusRow.appendChild(status);
+    statusRow.appendChild(minBtn);
+
+    panel.appendChild(topRow);
+    panel.appendChild(secondaryRow);
+    panel.appendChild(moreBox);
+    panel.appendChild(statusRow);
+    document.body.appendChild(panel);
+    document.body.appendChild(miniBtn);
+    if (loadUi().minimized) setMinimized(true);
+    refreshStatus();
+    updateDebugAttribute();
+
+    function setMoreOpen(open) {
+      moreBox.style.display = open ? 'flex' : 'none';
+      moreBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+    moreBtn.addEventListener('click', function () {
+      setMoreOpen(moreBox.style.display !== 'flex');
+    });
+    moreBox.addEventListener('click', function (event) {
+      if (event && event.target && event.target.tagName === 'BUTTON') setMoreOpen(false);
+    });
+
+    saveBtn.addEventListener('click', function () {
+      animate(saveBtn, 'shoplita-anim-save');
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Saving...';
+      collectProduct().then(function (record) {
+        upsertRecord(record);
+        var target = findCollection(getDefaultSetId());
+        if (target) addCollectionItem(target.id, recordItemKey(record));
+        refreshStatus();
+        saveBtn.textContent = 'Saved';
+        toast(target ? 'Saved to "' + target.name + '"!' : 'Saved!');
+      }).catch(function (e) {
+        saveBtn.disabled = false;
+        saveBtn.textContent = 'Save listing';
+        toast('Save failed: ' + (e && e.message ? e.message : e), true);
+      });
+    });
+
+    likePageBtn.addEventListener('click', function () {
