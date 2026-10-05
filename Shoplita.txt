@@ -4198,3 +4198,313 @@
     });
 
     likePageBtn.addEventListener('click', function () {
+      animate(likePageBtn, 'shoplita-anim-like');
+      likePageBtn.disabled = true;
+      collectProduct().then(function (record) {
+        upsertRecord(record);
+        likeItem(record);
+        var likeTarget = findCollection(getDefaultSetId());
+        if (likeTarget) addCollectionItem(likeTarget.id, recordItemKey(record));
+        refreshStatus();
+        likePageBtn.textContent = 'Liked';
+        toast(likeTarget ? 'Liked! Saved to "' + likeTarget.name + '"' : 'Liked!');
+      }).catch(function (e) {
+        likePageBtn.disabled = false;
+        likePageBtn.textContent = 'I like this!';
+        toast('Like failed: ' + (e && e.message ? e.message : e), true);
+      });
+    });
+
+    shareBtn.addEventListener('click', function () {
+      var all = loadAll();
+      if (!all.length) { toast('Nothing saved yet', true); return; }
+      exportForUserscript(all);
+    });
+
+    copyAllBtn.addEventListener('click', function () {
+      var all = loadAll();
+      if (!all.length) { toast('Nothing saved yet', true); return; }
+      copyText(toTsv(all)).then(function (ok) {
+        toast(ok ? 'Copied ' + variantCount(all) + ' rows (TSV) to clipboard' : 'Copy failed', !ok);
+      });
+    });
+
+    downloadBtn.addEventListener('click', function () {
+      var all = loadAll();
+      if (!all.length) { toast('Nothing saved yet', true); return; }
+      exportAll(all);
+    });
+
+    copySetsBtn.addEventListener('click', function () {
+      var all = loadAll();
+      if (!all.length) { toast('Nothing saved yet', true); return; }
+      var matrix = setMatrix(all);
+      copyText(toSetTsv(all)).then(function (ok) {
+        toast(ok ? 'Copied ' + matrix.rows.length + ' history row(s) (TSV) to clipboard' : 'Copy failed', !ok);
+      });
+    });
+
+    csvBtn.addEventListener('click', function () {
+      var all = loadAll();
+      if (!all.length) { toast('Nothing saved yet', true); return; }
+      var matrix = setMatrix(all);
+      if (downloadSetsCsv(all)) {
+        toast('Downloaded ' + matrix.rows.length + ' history row(s) as CSV');
+      } else {
+        toast('CSV download failed', true);
+      }
+    });
+
+    copyWishlistBtn.addEventListener('click', function () {
+      var all = loadAll();
+      if (!all.length) { toast('Nothing saved yet', true); return; }
+      var matrix = summaryMatrix(all);
+      copyText(toSummaryTsv(all)).then(function (ok) {
+        toast(ok ? 'Copied ' + matrix.rows.length + ' wishlist row(s) (TSV) to clipboard' : 'Copy failed', !ok);
+      });
+    });
+
+    wishlistBtn.addEventListener('click', function () {
+      var all = loadAll();
+      if (!all.length) { toast('Nothing saved yet', true); return; }
+      var matrix = summaryMatrix(all);
+      if (downloadSummaryCsv(all)) {
+        toast('Downloaded ' + matrix.rows.length + ' wishlist row(s) as CSV');
+      } else {
+        toast('CSV download failed', true);
+      }
+    });
+
+    copyPriceHistoryBtn.addEventListener('click', function () {
+      var all = loadAll();
+      if (!all.length) { toast('Nothing saved yet', true); return; }
+      var matrix = historyMatrix(all);
+      copyText(toHistoryTsv(all)).then(function (ok) {
+        toast(ok ? 'Copied ' + matrix.rows.length + ' price history row(s) (TSV)' : 'Copy failed', !ok);
+      });
+    });
+
+    priceHistoryCsvBtn.addEventListener('click', function () {
+      var all = loadAll();
+      if (!all.length) { toast('Nothing saved yet', true); return; }
+      var matrix = historyMatrix(all);
+      if (downloadPriceHistoryCsv(all)) {
+        toast('Downloaded ' + matrix.rows.length + ' price history row(s) as CSV');
+      } else {
+        toast('CSV download failed', true);
+      }
+    });
+
+    savedBtn.addEventListener('click', function () {
+      toggleSavedPanel();
+    });
+
+    compareBtn.addEventListener('click', function () {
+      openComparePanel();
+    });
+
+    importBtn.addEventListener('click', function () {
+      pickImportFile(function (text) {
+        var result = mergeImport(text);
+        if (result.error) { toast('Import failed: ' + result.error, true); return; }
+        refreshStatus();
+        toast('Imported: ' + result.added + ' new, ' + result.updated + ' updated, ' + result.skipped + ' skipped');
+      });
+    });
+  }
+
+  function whenBodyReady(fn) {
+    if (document.body) { fn(); return; }
+    var done = false;
+    function run() {
+      if (done || !document.body) return;
+      done = true;
+      fn();
+    }
+    document.addEventListener('DOMContentLoaded', run, false);
+    var tries = 0;
+    var timer = setInterval(function () {
+      if (document.body || ++tries > 200) {
+        clearInterval(timer);
+        run();
+      }
+    }, 50);
+  }
+
+  migrateLegacyKeys();
+  installAliExpressSniffer();
+  whenBodyReady(buildUi);
+
+  if (typeof GM_registerMenuCommand === 'function') {
+    GM_registerMenuCommand('Download saved info (JSON)', function () {
+      var all = loadAll();
+      if (!all.length) { toast('Nothing saved yet', true); return; }
+      exportAll(all);
+    });
+    GM_registerMenuCommand('Copy saved info (TSV)', function () {
+      var all = loadAll();
+      if (!all.length) { toast('Nothing saved yet', true); return; }
+      copyText(toTsv(all)).then(function (ok) {
+        toast(ok ? 'Copied TSV to clipboard' : 'Copy failed', !ok);
+      });
+    });
+    GM_registerMenuCommand('Copy history (TSV)', function () {
+      var all = loadAll();
+      if (!all.length) { toast('Nothing saved yet', true); return; }
+      copyText(toSetTsv(all)).then(function (ok) {
+        toast(ok ? 'Copied history (TSV) to clipboard' : 'Copy failed', !ok);
+      });
+    });
+    GM_registerMenuCommand('Download history (CSV)', function () {
+      var all = loadAll();
+      if (!all.length) { toast('Nothing saved yet', true); return; }
+      if (downloadSetsCsv(all)) toast('Downloaded history as CSV');
+      else toast('CSV download failed', true);
+    });
+    GM_registerMenuCommand('Copy wishlist (TSV)', function () {
+      var all = loadAll();
+      if (!all.length) { toast('Nothing saved yet', true); return; }
+      copyText(toSummaryTsv(all)).then(function (ok) {
+        toast(ok ? 'Copied wishlist (TSV) to clipboard' : 'Copy failed', !ok);
+      });
+    });
+    GM_registerMenuCommand('Download wishlist (CSV)', function () {
+      var all = loadAll();
+      if (!all.length) { toast('Nothing saved yet', true); return; }
+      if (downloadSummaryCsv(all)) toast('Downloaded wishlist as CSV');
+      else toast('CSV download failed', true);
+    });
+    GM_registerMenuCommand('Download price history (CSV)', function () {
+      var all = loadAll();
+      if (!all.length) { toast('Nothing saved yet', true); return; }
+      if (downloadPriceHistoryCsv(all)) toast('Downloaded price history as CSV');
+      else toast('CSV download failed', true);
+    });
+    GM_registerMenuCommand('Export for userscript', function () {
+      var all = loadAll();
+      if (!all.length) { toast('Nothing saved yet', true); return; }
+      exportForUserscript(all);
+    });
+    GM_registerMenuCommand('Import data', function () {
+      pickImportFile(function (text) {
+        var result = mergeImport(text);
+        if (result.error) { toast('Import failed: ' + result.error, true); return; }
+        if (refreshStatus) refreshStatus();
+        toast('Imported: ' + result.added + ' new, ' + result.updated + ' updated, ' + result.skipped + ' skipped');
+      });
+    });
+    GM_registerMenuCommand('Clear saved info', function () {
+      if (!confirm('Delete all saved Shoplita product info, priority scores and availability marks?')) return;
+      saveAll([]);
+      savePriority({});
+      saveUnavailable({});
+      compareState.a = null;
+      compareState.b = null;
+      persistCompareState();
+      if (refreshStatus) refreshStatus();
+      toast('Cleared saved info');
+    });
+  }
+
+  try {
+    if (typeof window !== 'undefined') {
+      window.__shoplita = {
+        version: (typeof GM_info !== 'undefined' && GM_info.script) ? GM_info.script.version : '',
+        adapter: function () {
+          var found = adapterFor(location.href);
+          return found ? found.id : null;
+        },
+        capturedData: getCapturedAliExpressData,
+        capturedImages: getCapturedAliExpressImages,
+        domImages: aliexpressDomImages
+      };
+    }
+  } catch (e) {}
+
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+      classify: classify,
+      normalize: normalize,
+      currentHandle: currentHandle,
+      currentPageId: currentPageId,
+      adapterFor: adapterFor,
+      findLatestByHandle: findLatestByHandle,
+      loadAll: loadAll,
+      recordKey: recordKey,
+      listingKeys: listingKeys,
+      recordsMatch: recordsMatch,
+      dedupeList: dedupeList,
+      dedupeRecords: dedupeRecords,
+      upsertRecord: upsertRecord,
+      collapseListingRows: collapseListingRows,
+      recordItemKey: recordItemKey,
+      loadPriority: loadPriority,
+      priorityScore: priorityScore,
+      isLiked: isLiked,
+      likeItem: likeItem,
+      variantPriceRange: variantPriceRange,
+      compareRecords: compareRecords,
+      loadUnavailable: loadUnavailable,
+      isMarkedUnavailable: isMarkedUnavailable,
+      toggleUnavailable: toggleUnavailable,
+      loadCollections: loadCollections,
+      saveCollections: saveCollections,
+      createCollection: createCollection,
+      deleteCollection: deleteCollection,
+      addCollectionItem: addCollectionItem,
+      getDefaultSetId: getDefaultSetId,
+      setDefaultSetId: setDefaultSetId,
+      getSortBy: getSortBy,
+      setSortBy: setSortBy,
+      toggleCollectionItem: toggleCollectionItem,
+      collectionsForItem: collectionsForItem,
+      collectionRecord: collectionRecord,
+      loadOutfits: loadOutfits,
+      saveOutfits: saveOutfits,
+      createOutfit: createOutfit,
+      deleteOutfit: deleteOutfit,
+      outfitRecord: outfitRecord,
+      collectComparePieces: collectComparePieces,
+      aliexpressSkuBase: aliexpressSkuBase,
+      aliexpressVariantOptions: aliexpressVariantOptions,
+      aliexpressAvailability: aliexpressAvailability,
+      aliexpressDomVariants: aliexpressDomVariants,
+      aliexpressImageUrl: aliexpressImageUrl,
+      captureAliExpressText: captureAliExpressText,
+      getCapturedAliExpressData: getCapturedAliExpressData,
+      getCapturedAliExpressImages: getCapturedAliExpressImages,
+      aliexpressDomImages: aliexpressDomImages,
+      findSkuBaseObject: findSkuBaseObject,
+      findImageList: findImageList,
+      collectImages: collectImages,
+      compareOrder: compareOrder,
+      nextAvailableRecord: nextAvailableRecord,
+      loadCompareKeys: loadCompareKeys,
+      persistCompareState: persistCompareState,
+      restoreCompareState: restoreCompareState,
+      exportForUserscript: exportForUserscript,
+      loadUi: loadUi,
+      saveUi: saveUi,
+      removeItemGroup: removeItemGroup,
+      mergeImport: mergeImport,
+      variantPieces: variantPieces,
+      buildSetRows: buildSetRows,
+      setMatrix: setMatrix,
+      latestSnapshots: latestSnapshots,
+      buildSummaryRows: buildSummaryRows,
+      summaryMatrix: summaryMatrix,
+      historyMatrix: historyMatrix,
+      toHistoryTsv: toHistoryTsv,
+      compareOptions: compareOptions,
+      newCompareSide: newCompareSide,
+      setCompareColor: setCompareColor,
+      sideTotal: sideTotal,
+      compareAddByHandle: compareAddByHandle,
+      toTsv: toTsv,
+      toSetTsv: toSetTsv,
+      toSummaryTsv: toSummaryTsv,
+      toCsv: toCsv
+    };
+  }
+})();
+
