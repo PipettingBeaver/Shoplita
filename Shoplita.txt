@@ -2998,3 +2998,603 @@
     } catch (e) {}
     aboutVersion.textContent = 'Shoplita' + (scriptVersion ? ' v' + scriptVersion : '');
     aboutVersion.style.cssText = 'color:#888;';
+    aboutBar.appendChild(aboutVersion);
+
+    panel.appendChild(head);
+    panel.appendChild(filters);
+    panel.appendChild(targetBar);
+    panel.appendChild(outfitsBar);
+    panel.appendChild(collectionsBar);
+    panel.appendChild(aboutBar);
+    panel.appendChild(body);
+    panel.appendChild(status);
+    document.body.appendChild(panel);
+    savedPanelEl = panel;
+    savedPanelBody = body;
+    savedPanelStatus = status;
+  }
+
+  function toggleSavedPanel(show) {
+    if (!savedPanelEl) buildSavedPanel();
+    var visible = savedPanelEl.style.display !== 'none';
+    var next = show === undefined ? !visible : !!show;
+    savedPanelEl.style.display = next ? 'flex' : 'none';
+    if (next) renderSavedPanel();
+  }
+
+  var compareEl = null;
+  var compareState = { a: null, b: null, rankBy: 'recent', filterSet: null };
+
+  function variantTypeName(v) {
+    var parsed = variantPieces(v);
+    if (parsed.bundle) {
+      var label = bundleLabel(v);
+      var stripped = stripColorWords(label);
+      return stripped ? titleCase(stripped) : label;
+    }
+    return parsed.pieces.length ? parsed.pieces[0].name : (normalizePieceName(v.piece) || 'Item');
+  }
+
+  function compareOptions(record) {
+    var variants = (record && record.variants) || [];
+    var types = [];
+    var colors = [];
+    var index = {};
+    for (var i = 0; i < variants.length; i++) {
+      var variant = variants[i];
+      var type = variantTypeName(variant);
+      var color = variant.color || '';
+      if (!index[type]) {
+        index[type] = { name: type, byColor: {}, variants: [] };
+        types.push(index[type]);
+      }
+      if (colors.indexOf(color) < 0) colors.push(color);
+      if (index[type].variants.length < 200) index[type].variants.push(variant);
+      var current = index[type].byColor[color];
+      if (!current || betterVariant(variant, current)) index[type].byColor[color] = variant;
+    }
+    return { types: types, colors: colors };
+  }
+
+  function firstColorVariant(type) {
+    for (var color in type.byColor) {
+      if (hasOwn(type.byColor, color)) return type.byColor[color];
+    }
+    return null;
+  }
+
+  function mainTypeName(types) {
+    var priority = ['OP', 'JSK', 'Dress', 'Skirt', 'Salopette', 'Top', 'Corset', 'Vest', 'Bolero', 'Blouse', 'Cape', 'Coat'];
+    for (var p = 0; p < priority.length; p++) {
+      for (var i = 0; i < types.length; i++) {
+        if (types[i].name === priority[p]) return types[i].name;
+      }
+    }
+    return types.length ? types[0].name : null;
+  }
+
+  function newCompareSide(record) {
+    var options = compareOptions(record);
+    var side = {
+      record: record,
+      options: options,
+      color: options.colors[0] || '',
+      picks: {},
+      include: {}
+    };
+    side.main = mainTypeName(options.types);
+    for (var i = 0; i < options.types.length; i++) {
+      var type = options.types[i];
+      var pick = type.byColor[side.color] || firstColorVariant(type);
+      side.picks[type.name] = pick;
+      side.include[type.name] = type.name === side.main;
+    }
+    return side;
+  }
+
+  function setCompareColor(side, color) {
+    side.color = color;
+    for (var i = 0; i < side.options.types.length; i++) {
+      var type = side.options.types[i];
+      var pick = type.byColor[color] || null;
+      side.picks[type.name] = pick;
+      if (!pick) side.include[type.name] = false;
+    }
+  }
+
+  function sideTotal(side) {
+    if (!side) return 0;
+    var total = 0;
+    for (var name in side.include) {
+      if (!hasOwn(side.include, name) || !side.include[name]) continue;
+      var pick = side.picks[name];
+      if (pick) total += Number(pick.price) || 0;
+    }
+    return Math.round(total * 100) / 100;
+  }
+
+  function variantPriceRange(record) {
+    var variants = (record && record.variants) || [];
+    var min = null;
+    var max = null;
+    for (var i = 0; i < variants.length; i++) {
+      var price = Number(variants[i].price);
+      if (isNaN(price)) continue;
+      if (min == null || price < min) min = price;
+      if (max == null || price > max) max = price;
+    }
+    return { min: min, max: max };
+  }
+
+  function collectComparePieces() {
+    var pieces = [];
+    var sides = [compareState.a, compareState.b];
+    for (var s = 0; s < sides.length; s++) {
+      var side = sides[s];
+      if (!side) continue;
+      for (var typeName in side.include) {
+        if (!hasOwn(side.include, typeName) || !side.include[typeName]) continue;
+        var pick = side.picks[typeName];
+        if (!pick) continue;
+        pieces.push({
+          name: typeName,
+          price: Number(pick.price) || 0,
+          color: pick.color || side.color || null,
+          available: !!pick.available,
+          itemName: side.record.name,
+          itemUrl: side.record.url || null,
+          source: side.record.source || null,
+          variantTitle: pick.variantTitle || null
+        });
+      }
+    }
+    return pieces;
+  }
+
+  function loadCompareImage(record, img) {
+    if (!record || record.image) return;
+    var match = String(record.url || '').match(/\/products\/([^/?#]+)/);
+    var handle = record.handle || (match && match[1]);
+    if (!handle) return;
+    fetchJson(recordOrigin(record) + '/products/' + encodeURIComponent(handle) + '.js').then(function (product) {
+      var image = firstImage(product.featured_image || product.images);
+      if (image) {
+        record.image = image;
+        img.src = image;
+      }
+    }).catch(function () {});
+  }
+
+  function closeCompare() {
+    if (compareEl) compareEl.style.display = 'none';
+  }
+
+  function compareRecordKey(side) {
+    return side && side.record ? recordItemKey(side.record) : null;
+  }
+
+  function findSnapshotByKey(key) {
+    if (!key) return null;
+    var records = latestSnapshots(loadAll());
+    for (var i = 0; i < records.length; i++) {
+      if (recordItemKey(records[i]) === key) return records[i];
+    }
+    if (key.indexOf('shoplita.set|') === 0) {
+      return collectionRecord(findCollection(key.slice('shoplita.set|'.length)));
+    }
+    if (key.indexOf('shoplita.outfit|') === 0) {
+      var outfits = loadOutfits();
+      var outfitId = key.slice('shoplita.outfit|'.length);
+      for (var o = 0; o < outfits.length; o++) {
+        if (outfits[o].id === outfitId) return outfitRecord(outfits[o]);
+      }
+    }
+    return null;
+  }
+
+  function loadCompareKeys() {
+    try {
+      var raw = typeof GM_getValue === 'function'
+        ? GM_getValue(COMPARE_KEY, '{}')
+        : (localStorage.getItem(COMPARE_KEY) || '{}');
+      var map = JSON.parse(raw);
+      return map && typeof map === 'object' ? map : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function saveCompareKeys(map) {
+    var raw = JSON.stringify(map);
+    if (typeof GM_setValue === 'function') GM_setValue(COMPARE_KEY, raw);
+    else localStorage.setItem(COMPARE_KEY, raw);
+  }
+
+  function persistCompareState() {
+    saveCompareKeys({
+      a: compareRecordKey(compareState.a),
+      b: compareRecordKey(compareState.b),
+      rank: compareState.rankBy || 'recent',
+      filter: compareState.filterSet || null
+    });
+  }
+
+  function restoreCompareState() {
+    var keys = loadCompareKeys();
+    if (keys.rank) compareState.rankBy = keys.rank;
+    if (keys.filter) compareState.filterSet = keys.filter;
+    if (compareState.a || compareState.b) return;
+    if (!keys.a && !keys.b) return;
+    var recordA = keys.a ? findSnapshotByKey(keys.a) : null;
+    var recordB = keys.b ? findSnapshotByKey(keys.b) : null;
+    if (recordA) compareState.a = newCompareSide(recordA);
+    if (recordB) compareState.b = newCompareSide(recordB);
+  }
+
+  function compareRecords() {
+    var records = latestSnapshots(loadAll());
+    if (!compareState.filterSet) return records;
+    var collection = findCollection(compareState.filterSet);
+    if (!collection || !Array.isArray(collection.items)) return records;
+    var allowed = {};
+    for (var i = 0; i < collection.items.length; i++) allowed[collection.items[i]] = true;
+    var out = [];
+    for (var j = 0; j < records.length; j++) {
+      if (allowed[recordItemKey(records[j])]) out.push(records[j]);
+    }
+    return out;
+  }
+
+  function compareAddByHandle(key) {
+    var found = findSnapshotByKey(key);
+    if (!found) return;
+    if (compareRecordKey(compareState.a) !== key && compareRecordKey(compareState.b) !== key) {
+      if (!compareState.a) setCompareSide('A', found);
+      else setCompareSide('B', found);
+    }
+    openComparePanel();
+  }
+
+  function compareOrder(records) {
+    var unavailable = loadUnavailable();
+    var available = [];
+    var blocked = [];
+    for (var i = 0; i < records.length; i++) {
+      if (unavailable[recordItemKey(records[i])]) blocked.push(records[i]);
+      else available.push(records[i]);
+    }
+    var rankByPriority = compareState.rankBy === 'priority';
+    function sorter(a, b) {
+      if (rankByPriority) {
+        var diff = priorityScore(b) - priorityScore(a);
+        if (diff) return diff;
+      }
+      var aDate = String(a.savedAt || '');
+      var bDate = String(b.savedAt || '');
+      if (aDate === bDate) return 0;
+      return aDate > bDate ? -1 : 1;
+    }
+    available.sort(sorter);
+    blocked.sort(sorter);
+    return { available: available, blocked: blocked };
+  }
+
+  function setCompareSide(label, record) {
+    var side = record ? newCompareSide(record) : null;
+    if (label === 'A') compareState.a = side;
+    else compareState.b = side;
+    persistCompareState();
+  }
+
+  function nextAvailableRecord(currentKey, otherKey) {
+    var order = compareOrder(compareRecords());
+    var list = order.available;
+    if (!list.length) return null;
+    var start = 0;
+    for (var i = 0; i < list.length; i++) {
+      if (recordItemKey(list[i]) === currentKey) { start = i + 1; break; }
+    }
+    for (var step = 0; step < list.length; step++) {
+      var candidate = list[(start + step) % list.length];
+      var key = recordItemKey(candidate);
+      if (key !== currentKey && key !== otherKey) return candidate;
+    }
+    return null;
+  }
+
+  var comboDocBound = false;
+  var activeCombo = null;
+
+  function bindComboDocument() {
+    if (comboDocBound) return;
+    comboDocBound = true;
+    document.addEventListener('click', function (event) {
+      if (!activeCombo || !event || !event.target) return;
+      var wrap = activeCombo.wrap;
+      if (wrap && wrap.contains && !wrap.contains(event.target)) activeCombo.close();
+    });
+  }
+
+  function makeSearchableSelect(placeholder, ariaLabel, groups, selectedKey, onSelect) {
+    bindComboDocument();
+    var wrap = document.createElement('span');
+    wrap.style.cssText = 'position:relative;display:inline-block;min-width:200px;max-width:280px;flex:1 1 200px;';
+
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = placeholder;
+    input.className = 'shoplita-focus';
+    input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-expanded', 'false');
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-label', ariaLabel);
+    input.style.cssText = 'width:100%;padding:4px 6px;border:1px solid #ccc;border-radius:6px;font-size:12px;';
+
+    var list = document.createElement('div');
+    list.setAttribute('role', 'listbox');
+    list.setAttribute('aria-label', ariaLabel + ' options');
+    list.style.cssText = 'position:absolute;z-index:20;left:0;right:0;top:100%;margin-top:2px;max-height:260px;overflow:auto;' +
+      'background:#fff;border:1px solid #ccc;border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,.18);display:none;padding:4px 0;';
+
+    var entries = [];
+    var headers = [];
+    var counter = 0;
+    var activeIndex = -1;
+
+    function addEntry(value, label, disabled, isHeader) {
+      var el = document.createElement('div');
+      el.id = 'shoplita-option-' + (++counter);
+      el.textContent = label;
+      if (isHeader) {
+        el.setAttribute('role', 'presentation');
+        el.style.cssText = 'padding:5px 10px;font-size:10px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;background:#fafafa;';
+        headers.push(el);
+      } else {
+        el.setAttribute('role', 'option');
+        el.setAttribute('aria-selected', value === selectedKey ? 'true' : 'false');
+        if (disabled) el.setAttribute('aria-disabled', 'true');
+        el.style.cssText = 'padding:5px 10px;font-size:12px;' +
+          (disabled ? 'color:#aaa;cursor:default;' : 'cursor:pointer;') +
+          (value === selectedKey ? 'font-weight:700;background:#fdf0f6;' : '');
+        entries.push({ el: el, value: value, label: label, disabled: !!disabled });
+        if (!disabled) {
+          el.addEventListener('click', function () { choose(value); });
+          el.addEventListener('mouseenter', function () { setActiveByValue(value); });
+        }
+      }
+      list.appendChild(el);
+    }
+
+    for (var g = 0; g < groups.length; g++) {
+      if (!groups[g].options || !groups[g].options.length) continue;
+      if (groups[g].label) addEntry(null, groups[g].label, true, true);
+      for (var o = 0; o < groups[g].options.length; o++) {
+        var option = groups[g].options[o];
+        addEntry(option.value, option.label, option.disabled, false);
+      }
+    }
+
+    function visibleEntries() {
+      var out = [];
+      for (var i = 0; i < entries.length; i++) {
+        if (entries[i].el.style.display !== 'none') out.push(entries[i]);
+      }
+      return out;
+    }
+
+    function setActive(index) {
+      var visible = visibleEntries();
+      if (!visible.length) return;
+      if (index < 0) index = visible.length - 1;
+      if (index >= visible.length) index = 0;
+      activeIndex = index;
+      for (var i = 0; i < visible.length; i++) {
+        visible[i].el.setAttribute('aria-selected', i === index ? 'true' : 'false');
+      }
+      input.setAttribute('aria-activedescendant', visible[index].el.id);
+    }
+
+    function setActiveByValue(value) {
+      var visible = visibleEntries();
+      for (var i = 0; i < visible.length; i++) {
+        if (visible[i].value === value) { setActive(i); return; }
+      }
+    }
+
+    function open() {
+      list.style.display = 'block';
+      input.setAttribute('aria-expanded', 'true');
+      activeCombo = { wrap: wrap, close: close };
+    }
+    function close() {
+      list.style.display = 'none';
+      input.setAttribute('aria-expanded', 'false');
+      if (input.removeAttribute) input.removeAttribute('aria-activedescendant');
+      if (activeCombo && activeCombo.wrap === wrap) activeCombo = null;
+    }
+    function choose(value) {
+      for (var i = 0; i < entries.length; i++) {
+        if (entries[i].value === value) {
+          input.value = entries[i].label;
+          close();
+          onSelect(value);
+          return;
+        }
+      }
+    }
+    function filter() {
+      var text = String(input.value || '').toLowerCase();
+      for (var i = 0; i < entries.length; i++) {
+        entries[i].el.style.display = !text || entries[i].label.toLowerCase().indexOf(text) >= 0 ? '' : 'none';
+      }
+      for (var h = 0; h < headers.length; h++) {
+        headers[h].style.display = text ? 'none' : '';
+      }
+      activeIndex = -1;
+    }
+
+    input.addEventListener('focus', function () { open(); });
+    input.addEventListener('click', function () { open(); });
+    input.addEventListener('input', function () { filter(); open(); });
+    input.addEventListener('keydown', function (event) {
+      var key = event && event.key;
+      if (key === 'ArrowDown') {
+        if (event.preventDefault) event.preventDefault();
+        open();
+        setActive(activeIndex + 1);
+      } else if (key === 'ArrowUp') {
+        if (event.preventDefault) event.preventDefault();
+        open();
+        setActive(activeIndex - 1);
+      } else if (key === 'Enter') {
+        var visible = visibleEntries();
+        if (visible.length) {
+          if (event.preventDefault) event.preventDefault();
+          choose(visible[activeIndex >= 0 ? activeIndex : 0].value);
+        }
+      } else if (key === 'Escape') {
+        close();
+      }
+    });
+    input.addEventListener('blur', function () {
+      setTimeout(close, 150);
+    });
+
+    for (var s = 0; s < entries.length; s++) {
+      if (entries[s].value === selectedKey) input.value = entries[s].label;
+    }
+
+    wrap.appendChild(input);
+    wrap.appendChild(list);
+    return wrap;
+  }
+
+  function makeCompareSelect(label, records, selected, onChange) {
+    var selectedKey = '';
+    if (selected) {
+      if (selected.source === 'shoplita.set') selectedKey = 'set:' + selected.handle;
+      else if (selected.source === 'shoplita.outfit') selectedKey = 'fit:' + selected.handle;
+      else selectedKey = recordItemKey(selected);
+    }
+    var order = compareOrder(records);
+    var groups = [];
+    var availableOptions = [];
+    for (var i = 0; i < order.available.length; i++) {
+      var record = order.available[i];
+      availableOptions.push({
+        value: recordItemKey(record),
+        label: record.name + (record.savedAt ? ' (' + String(record.savedAt).slice(0, 10) + ')' : '')
+      });
+    }
+    groups.push({ label: 'Available', options: availableOptions });
+    if (order.blocked.length) {
+      var blockedOptions = [];
+      for (var b = 0; b < order.blocked.length; b++) {
+        blockedOptions.push({ value: recordItemKey(order.blocked[b]), label: order.blocked[b].name });
+      }
+      groups.push({ label: 'Unavailable ----', options: blockedOptions });
+    }
+    var collections = loadCollections();
+    if (collections.length) {
+      var setOptions = [];
+      for (var si = 0; si < collections.length; si++) {
+        setOptions.push({
+          value: 'set:' + collections[si].id,
+          label: 'Set: ' + collections[si].name + ' (' +
+            (Array.isArray(collections[si].items) ? collections[si].items.length : 0) + ')'
+        });
+      }
+      groups.push({ label: 'Sets ----', options: setOptions });
+    }
+    var outfits = loadOutfits();
+    if (outfits.length) {
+      var outfitOptions = [];
+      for (var oi = 0; oi < outfits.length; oi++) {
+        outfitOptions.push({
+          value: 'fit:' + outfits[oi].id,
+          label: 'Outfit: ' + outfits[oi].name + ' (' +
+            (Array.isArray(outfits[oi].pieces) ? outfits[oi].pieces.length : 0) + ')'
+        });
+      }
+      groups.push({ label: 'Outfits ----', options: outfitOptions });
+    }
+    return makeSearchableSelect('Item ' + label + ': search\u2026', 'Compare item ' + label, groups, selectedKey, function (value) {
+      if (value.indexOf('set:') === 0) {
+        onChange(collectionRecord(findCollection(value.slice(4))));
+        return;
+      }
+      if (value.indexOf('fit:') === 0) {
+        var list = loadOutfits();
+        var outfitId = value.slice(4);
+        for (var f = 0; f < list.length; f++) {
+          if (list[f].id === outfitId) { onChange(outfitRecord(list[f])); return; }
+        }
+        onChange(null);
+        return;
+      }
+      onChange(findSnapshotByKey(value));
+    });
+  }
+
+  function renderCompareTypeRow(side, type) {
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;';
+    var box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = !!side.include[type.name];
+    box.setAttribute('aria-label', 'Include ' + type.name);
+    var pick = side.picks[type.name];
+    box.addEventListener('change', function () {
+      side.include[type.name] = box.checked;
+      renderCompare();
+    });
+    var name = document.createElement('span');
+    name.textContent = type.name;
+    name.style.cssText = 'min-width:86px;font-weight:600;';
+    var select = document.createElement('select');
+    select.style.cssText = 'flex:1;padding:3px 6px;border:1px solid #ccc;border-radius:6px;';
+    var variantList = Array.isArray(type.variants) && type.variants.length ? type.variants : [];
+    if (!variantList.length) {
+      for (var c0 = 0; c0 < side.options.colors.length; c0++) {
+        if (type.byColor[side.options.colors[c0]]) variantList.push(type.byColor[side.options.colors[c0]]);
+      }
+    }
+    var hasOption = false;
+    var anyAvailable = false;
+    for (var vi = 0; vi < variantList.length; vi++) {
+      var variant = variantList[vi];
+      hasOption = true;
+      if (variant.available) anyAvailable = true;
+      var option = document.createElement('option');
+      option.value = String(vi);
+      option.textContent = (variant.color || 'default') + (variant.size ? ' \u00b7 ' + variant.size : '') +
+        ' \u00b7 ' + Number(variant.price).toFixed(2) +
+        (variant.available ? '' : ' \u00b7 out of stock');
+      option.selected = pick === variant;
+      select.appendChild(option);
+    }
+    if (hasOption && !anyAvailable) {
+      row.style.opacity = '0.6';
+      name.textContent = type.name + ' (sold out)';
+    }
+    if (!pick) {
+      var placeholder = document.createElement('option');
+      placeholder.textContent = 'no ' + (side.color || 'default') + ' option';
+      placeholder.selected = true;
+      select.insertBefore(placeholder, select.firstChild || null);
+      box.checked = false;
+      box.disabled = true;
+    }
+    if (!hasOption) select.disabled = true;
+    select.addEventListener('change', function () {
+      var chosen = variantList[parseInt(select.value, 10)] || null;
+      side.picks[type.name] = chosen;
+      side.include[type.name] = !!chosen;
+      renderCompare();
+    });
+    row.appendChild(box);
+    row.appendChild(name);
+    row.appendChild(select);
+    return row;
+  }
+
