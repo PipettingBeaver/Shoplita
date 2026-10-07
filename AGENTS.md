@@ -44,8 +44,9 @@ node /tmp/opencode/smoke42.js   # UI/storage/compare/collections/outfit smoke te
 - Devilinspired: parses the page's inline `window.skuMap`.
 - My-Lolita-Dress: Cloudflare returns 403 to curl; only the generic DOM collector can work — verify in a real browser.
 - AliExpress: `installAliExpressSniffer()` (called at document-start) wraps `fetch`/XHR to capture the PDP's own SKU API response (`skuBase`) — this is the only source of per-size prices on the new React PDP. Fallback order: captured API data → embedded `window.runParams`/`_d_c_` → DOM (`[class*="sku-item--property"]` / `[data-sku-col]` options, `[class*="price-default--current"]` price, `[class*="quantity--info"]` availability, slider/magnifier images upscaled via `aliexpressImageUrl`). Login/sync redirects block scripted requests — verify in a real browser.
+- Amazon: pure DOM collector (`collectAmazon`). ASIN comes from `/dp/`, `/gp/product/`, `/gp/aw/d/`, `/d/`, `/product/` or `?asin=`; price is read from the core-price/apex/buybox selectors, JSON-LD `offers` (incl. `lowPrice`), or the generic fallback; variants are built as a color × size cross-product from `[id^="variation_"]` (single-dim fallback, base variant when no twister). Per-ASIN prices/availability are not fetched, so all combos carry the page price. Amazon serves bot interstitials to scripted requests — verify in a real browser.
 - Adapters carry a `label` used by the Saved-items About list; add one when registering a new adapter.
-- `@match` currently covers 42lolita.com, devilinspired.com, my-lolita-dress.com, and `*.aliexpress.com`/`*.aliexpress.us` item pages.
+- `@match` currently covers 42lolita.com, devilinspired.com, my-lolita-dress.com, `*.aliexpress.com`/`*.aliexpress.us`, and `*.amazon.*` storefronts (item pages).
 
 ## UI conventions
 - Inline styles only; one injected stylesheet `#shoplita-saveinfo-styles`; CSS classes are prefixed `shoplita-`.

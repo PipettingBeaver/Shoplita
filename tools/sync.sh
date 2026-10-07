@@ -10,9 +10,7 @@ PORT="${PORT:-8791}"
 
 build() {
   cp Shoplita.txt Shoplita.user.js
-  sed "/^\/\/ @namespace/a\\
-// @updateURL    http://127.0.0.1:${PORT}/Shoplita.dev.user.js\\
-// @downloadURL  http://127.0.0.1:${PORT}/Shoplita.dev.user.js" Shoplita.txt > Shoplita.dev.user.js
+  sed "s#https://github.com/PipettingBeaver/Shoplita/raw/refs/heads/main/Shoplita.user.js#http://127.0.0.1:${PORT}/Shoplita.dev.user.js#g" Shoplita.txt > Shoplita.dev.user.js
 }
 
 build

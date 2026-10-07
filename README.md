@@ -3,7 +3,7 @@
 A little shopping aggregator, built for friends.
 
 Shoplita is a browser userscript that saves prices and pieces from lolita shops
-(42Lolita, Devilinspired, My-Lolita-Dress, AliExpress, and other pages) into one
+(42Lolita, Devilinspired, My-Lolita-Dress, AliExpress, Amazon, and other pages) into one
 wishlist. It keeps dated price snapshots, totals coordinated sets, ranks
 favourites, tracks availability, groups items into named sets, saves
 mix-and-match outfits, and compares items, sets, and outfits in a minimizable

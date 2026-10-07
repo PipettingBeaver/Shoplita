@@ -3,8 +3,8 @@
 // @namespace    shoplita
 // @updateURL    http://127.0.0.1:8791/Shoplita.dev.user.js
 // @downloadURL  http://127.0.0.1:8791/Shoplita.dev.user.js
-// @version      2.13.0
-// @description  Saves prices and pieces from lolita shops (42Lolita, Devilinspired, My-Lolita-Dress, AliExpress and other pages) into one wishlist. Keeps dated snapshots, computes coordinated set totals, ranks favourites, marks availability, organizes items into named sets and saves mix-and-match outfits, exports/imports JSON, TSV, Excel-ready CSV and Shoplita share files, and compares items, sets and outfits with searchable pickers, images and live totals in a minimizable panel.
+// @version      2.14.0
+// @description  Saves prices and pieces from lolita shops (42Lolita, Devilinspired, My-Lolita-Dress, AliExpress, Amazon and other pages) into one wishlist. Keeps dated snapshots, computes coordinated set totals, ranks favourites, marks availability, organizes items into named sets and saves mix-and-match outfits, exports/imports JSON, TSV, Excel-ready CSV and Shoplita share files, and compares items, sets and outfits with searchable pickers, images and live totals in a minimizable panel.
 // @author       tan
 // @match        https://42lolita.com/*
 // @match        https://www.42lolita.com/*
@@ -14,6 +14,21 @@
 // @match        https://www.my-lolita-dress.com/*
 // @match        https://*.aliexpress.com/*
 // @match        https://*.aliexpress.us/*
+// @match        https://*.amazon.com/*
+// @match        https://*.amazon.ca/*
+// @match        https://*.amazon.com.mx/*
+// @match        https://*.amazon.com.br/*
+// @match        https://*.amazon.co.uk/*
+// @match        https://*.amazon.de/*
+// @match        https://*.amazon.fr/*
+// @match        https://*.amazon.es/*
+// @match        https://*.amazon.it/*
+// @match        https://*.amazon.nl/*
+// @match        https://*.amazon.se/*
+// @match        https://*.amazon.pl/*
+// @match        https://*.amazon.co.jp/*
+// @match        https://*.amazon.in/*
+// @match        https://*.amazon.com.au/*
 // @grant        GM_setClipboard
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -1583,6 +1598,258 @@
       return /(^|\.)my-lolita-dress\.com$/.test(location.hostname || '') && /-p\d+\.html?$/i.test(location.pathname || '');
     },
     collect: collectGenericDom
+  });
+
+  function amazonHost() {
+    return /(^|\.)amazon\.[a-z]{2,3}(\.[a-z]{2})?$/i.test(location.hostname || '');
+  }
+
+  function amazonAsin() {
+    var path = String(location.pathname || '');
+    var match = path.match(/\/(?:dp|gp\/product|gp\/aw\/d|product|d|offer-listing|exec\/obidos\/ASIN|ASIN)\/([A-Z0-9]{10})(?:[/?#]|$)/i);
+    if (!match) match = String(location.search || '').match(/[?&](?:asin|ASIN)=([A-Z0-9]{10})/i);
+    if (!match) match = path.match(/\/([A-Z0-9]{10})(?:[/?#]|$)/);
+    return match ? String(match[1]).toUpperCase() : null;
+  }
+
+  function amazonTitle() {
+    var text = domText('#productTitle') || metaContent('meta[property="og:title"]') || document.title || '';
+    var cleaned = String(text).replace(/\s+/g, ' ')
+      .replace(/^Amazon\.[a-z.]+:\s*/i, '')
+      .replace(/\s*[:|\-]\s*Amazon\.[a-z.]+.*$/i, '')
+      .trim();
+    return cleaned || 'Unnamed product';
+  }
+
+  function jsonLdPrice(data) {
+    if (!data) return null;
+    if (Object.prototype.toString.call(data) === '[object Array]') {
+      for (var i = 0; i < data.length; i++) {
+        var arrayPrice = jsonLdPrice(data[i]);
+        if (arrayPrice != null) return arrayPrice;
+      }
+      return null;
+    }
+    var offers = data.offers;
+    if (offers) {
+      var list = Object.prototype.toString.call(offers) === '[object Array]' ? offers : [offers];
+      for (var j = 0; j < list.length; j++) {
+        var offer = list[j] || {};
+        var value = parsePriceNumber(offer.price);
+        if (value == null) value = parsePriceNumber(offer.lowPrice);
+        if (value == null && offer.priceSpecification) value = parsePriceNumber(offer.priceSpecification.price);
+        if (value != null) return value;
+      }
+    }
+    return data.price == null ? null : parsePriceNumber(data.price);
+  }
+
+  function amazonPriceNumber() {
+    var selectors = [
+      '#corePriceDisplay_desktop_feature_div .a-price .a-offscreen',
+      '#corePriceDisplay_mobile_feature_div .a-price .a-offscreen',
+      '#corePrice_feature_div .a-price .a-offscreen',
+      '#apex_desktop .a-price .a-offscreen',
+      '#apex_offerDisplay_desktop .a-price .a-offscreen',
+      '#price_inside_buybox',
+      '#priceblock_ourprice',
+      '#priceblock_dealprice',
+      '#priceblock_saleprice',
+      '#tp_price_block_total_price_ww .a-offscreen',
+      '#buybox .a-price .a-offscreen',
+      '[data-a-color="price"] .a-offscreen'
+    ];
+    for (var i = 0; i < selectors.length; i++) {
+      var el = document.querySelector(selectors[i]);
+      if (!el) continue;
+      var value = parsePriceNumber(el.textContent);
+      if (value != null) return value;
+    }
+    var meta = parsePriceNumber(metaContent('meta[itemprop="price"]'));
+    if (meta != null) return meta;
+    var scripts = document.querySelectorAll('script[type="application/ld+json"]');
+    for (var s = 0; s < scripts.length; s++) {
+      var data;
+      try { data = JSON.parse(scripts[s].textContent); } catch (e) { continue; }
+      var ldPrice = jsonLdPrice(data);
+      if (ldPrice != null) return ldPrice;
+    }
+    return domPriceNumber();
+  }
+
+  function amazonImageUrl(src) {
+    var url = String(src || '').trim();
+    if (!url || url.indexOf('data:') === 0) return null;
+    return url.replace(/\._[A-Za-z0-9_,]+_\.(jpe?g|png|webp|gif)$/i, '._SL1500_.$1');
+  }
+
+  function amazonImages() {
+    var out = [];
+    var seen = {};
+    function add(src) {
+      var url = amazonImageUrl(src);
+      if (!url || seen[url]) return;
+      seen[url] = true;
+      out.push(url);
+    }
+    add(metaContent('meta[property="og:image"]'));
+    var landing = document.querySelector('#landingImage, #imgBlkFront, #imgTagWrapperId img, #main-image-container img, #imageBlock img');
+    if (landing) {
+      add(landing.getAttribute('data-old-hires'));
+      add(landing.getAttribute('data-a-hires'));
+      var dynamic = landing.getAttribute('data-a-dynamic-image');
+      if (dynamic) {
+        try {
+          var map = JSON.parse(dynamic);
+          var urls = Object.keys(map).sort(function (a, b) {
+            var da = map[a] || [0, 0];
+            var db = map[b] || [0, 0];
+            return (db[0] * db[1]) - (da[0] * da[1]);
+          });
+          for (var d = 0; d < urls.length; d++) add(urls[d]);
+        } catch (e) {}
+      }
+      add(landing.getAttribute('src'));
+      add(landing.getAttribute('data-src'));
+    }
+    var thumbs = document.querySelectorAll('#altImages img, #imageBlock img');
+    for (var t = 0; t < thumbs.length && out.length < 6; t++) add(thumbs[t].getAttribute('src'));
+    return out.slice(0, 6);
+  }
+
+  function amazonSoldOut() {
+    var oos = document.querySelector('#outOfStock');
+    if (oos && oos.offsetParent !== null && (oos.offsetWidth || oos.offsetHeight)) return true;
+    var availability = domText('#availability');
+    if (availability) {
+      if (/currently unavailable|out of stock|not available/i.test(availability)) return true;
+      if (/in stock|left in stock|only \d+ left|ships from|sold by/i.test(availability)) return false;
+    }
+    if (document.querySelector('#add-to-cart-button, #buy-now-button, #addToCart, input[name="submit.add-to-cart"]')) return false;
+    return domSoldOut();
+  }
+
+  function amazonDimensionLabel(id) {
+    var name = String(id || '').replace(/^variation_/, '').replace(/_name$/, '').replace(/_/g, ' ');
+    if (/colou?r/i.test(name)) return 'Color';
+    if (/size|length/i.test(name)) return 'Size';
+    return titleCase(name) || 'Option';
+  }
+
+  function amazonDimensionValues(container) {
+    var out = [];
+    var seen = {};
+    var items = container.querySelectorAll('li, option');
+    for (var i = 0; i < items.length; i++) {
+      var el = items[i];
+      var text = '';
+      var button = el.querySelector && el.querySelector('.a-button-text');
+      if (button && String(button.textContent || '').trim()) text = String(button.textContent).trim();
+      if (!text) {
+        var img = el.querySelector && el.querySelector('img');
+        if (img) text = String(img.getAttribute('alt') || img.getAttribute('title') || '').trim();
+      }
+      if (!text && String(el.tagName || '').toUpperCase() === 'OPTION') text = String(el.textContent || '').trim();
+      text = text.replace(/\s+/g, ' ');
+      if (!text || text.length > 40 || /^(select|choose|all|see all)$/i.test(text) || seen[text]) continue;
+      seen[text] = true;
+      out.push(text);
+    }
+    return out;
+  }
+
+  function amazonVariants(price, soldOut) {
+    var containers = document.querySelectorAll('[id^="variation_"]');
+    var colorDim = null;
+    var sizeDim = null;
+    var otherDim = null;
+    for (var c = 0; c < containers.length; c++) {
+      var id = String(containers[c].id || '');
+      if (/^variation_(asin|reviews|page|builder|swatch|sub)/i.test(id)) continue;
+      var values = amazonDimensionValues(containers[c]);
+      if (!values.length) continue;
+      var dim = { name: amazonDimensionLabel(id), values: values };
+      if (!colorDim && /colou?r/i.test(id)) colorDim = dim;
+      else if (!sizeDim && /size|length/i.test(id)) sizeDim = dim;
+      else if (!otherDim) otherDim = dim;
+    }
+    var options = [];
+    var combos = [];
+    if (colorDim && sizeDim) {
+      options = [colorDim.name, sizeDim.name];
+      for (var ci = 0; ci < colorDim.values.length; ci++) {
+        for (var si = 0; si < sizeDim.values.length; si++) {
+          combos.push([colorDim.values[ci], sizeDim.values[si]]);
+        }
+      }
+    } else {
+      var single = colorDim || sizeDim || otherDim;
+      if (single) {
+        options = [single.name];
+        for (var vi = 0; vi < single.values.length; vi++) combos.push([single.values[vi], null]);
+      }
+    }
+    var variants = [];
+    for (var k = 0; k < combos.length && variants.length < 60; k++) {
+      var a = combos[k][0];
+      var b = combos[k][1];
+      var label = [a, b].filter(function (x) { return x != null && x !== ''; }).join(' / ');
+      variants.push({
+        id: label || 'base',
+        title: label || 'base',
+        option1: a,
+        option2: b,
+        option3: null,
+        price: Math.round(price * 100),
+        compare_at_price: null,
+        available: !soldOut,
+        sku: null
+      });
+    }
+    if (!variants.length) {
+      options = [];
+      variants.push({
+        id: 'base',
+        title: 'base',
+        option1: null,
+        option2: null,
+        option3: null,
+        price: Math.round(price * 100),
+        compare_at_price: null,
+        available: !soldOut,
+        sku: null
+      });
+    }
+    return { options: options, variants: variants };
+  }
+
+  function collectAmazon() {
+    var name = amazonTitle();
+    var price = amazonPriceNumber();
+    if (price == null) return Promise.reject(new Error('could not read Amazon price'));
+    var currency = detectCurrency();
+    var images = amazonImages();
+    var soldOut = amazonSoldOut();
+    var built = amazonVariants(price, soldOut);
+    return Promise.resolve(normalize({
+      title: name,
+      type: null,
+      vendor: null,
+      description: '',
+      image: images.length ? images[0] : null,
+      images: images,
+      options: built.options,
+      variants: built.variants
+    }, amazonAsin() || currentPageId(), currency));
+  }
+
+  registerAdapter({
+    id: 'amazon',
+    label: 'Amazon',
+    matches: function () {
+      return amazonHost() && !!amazonAsin();
+    },
+    collect: collectAmazon
   });
 
   function findEmbeddedJson(names) {
@@ -4476,6 +4743,13 @@
       getCapturedAliExpressData: getCapturedAliExpressData,
       getCapturedAliExpressImages: getCapturedAliExpressImages,
       aliexpressDomImages: aliexpressDomImages,
+      amazonAsin: amazonAsin,
+      amazonImageUrl: amazonImageUrl,
+      amazonImages: amazonImages,
+      amazonPriceNumber: amazonPriceNumber,
+      amazonSoldOut: amazonSoldOut,
+      amazonVariants: amazonVariants,
+      jsonLdPrice: jsonLdPrice,
       findSkuBaseObject: findSkuBaseObject,
       findImageList: findImageList,
       collectImages: collectImages,
