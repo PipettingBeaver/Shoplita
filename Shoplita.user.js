@@ -3,7 +3,7 @@
 // @namespace    shoplita
 // @updateURL    https://github.com/PipettingBeaver/Shoplita/raw/refs/heads/main/Shoplita.user.js
 // @downloadURL  https://github.com/PipettingBeaver/Shoplita/raw/refs/heads/main/Shoplita.user.js
-// @version      2.14.1
+// @version      2.15.1
 // @description  Saves prices and pieces from lolita shops (42Lolita, Devilinspired, My-Lolita-Dress, AliExpress, Amazon and other pages) into one wishlist. Keeps dated snapshots, computes coordinated set totals, ranks favourites, marks availability, organizes items into named sets and saves mix-and-match outfits, exports/imports JSON, TSV, Excel-ready CSV and Shoplita share files, and compares items, sets and outfits with searchable pickers, images and live totals in a minimizable panel.
 // @author       tan
 // @match        https://42lolita.com/*
@@ -525,16 +525,138 @@
     return false;
   }
 
+  function pickIdentity(pick) {
+    if (!pick) return '';
+    if (pick.variantId != null && pick.variantId !== '') return 'v:' + String(pick.variantId);
+    return 'c:' + (pick.color || '') + '|s:' + (pick.size || '') + '|p:' + (pick.piece || '');
+  }
+
+  function pickLabel(pick) {
+    if (!pick) return '';
+    var parts = [];
+    if (pick.color) parts.push(pick.color);
+    if (pick.size) parts.push(pick.size);
+    if (!parts.length && pick.piece) parts.push(pick.piece);
+    return parts.join(' / ') || 'Pick';
+  }
+
+  function optionsMatch(variantOptions, selected) {
+    if (!variantOptions || !selected || !selected.length) return false;
+    var matched = 0;
+    for (var i = 0; i < selected.length; i++) {
+      var name = selected[i] && selected[i].name;
+      var value = selected[i] && selected[i].value;
+      if (!name || value == null || value === '') continue;
+      var current = variantOptions[name];
+      if (String(current == null ? '' : current) !== String(value)) return false;
+      matched++;
+    }
+    return matched > 0;
+  }
+
+  function findPickVariant(record, raw) {
+    if (!record || !raw) return null;
+    var variants = record.variants || [];
+    var i;
+    if (raw.variantId != null && raw.variantId !== '') {
+      for (i = 0; i < variants.length; i++) {
+        if (String(variants[i].id) === String(raw.variantId)) return variants[i];
+      }
+    }
+    if (raw.options && raw.options.length) {
+      for (i = 0; i < variants.length; i++) {
+        if (optionsMatch(variants[i].options, raw.options)) return variants[i];
+      }
+    }
+    if (raw.color || raw.size) {
+      for (i = 0; i < variants.length; i++) {
+        var variant = variants[i];
+        if (raw.color && String(variant.color || '') !== String(raw.color)) continue;
+        if (raw.size && String(variant.size || '') !== String(raw.size)) continue;
+        return variant;
+      }
+    }
+    return null;
+  }
+
+  function makePick(record, raw) {
+    if (!raw) return null;
+    var variant = findPickVariant(record, raw);
+    var pick = { variantId: raw.variantId != null ? raw.variantId : null, piece: null, color: null, size: null, image: null };
+    if (variant) {
+      pick.variantId = variant.id;
+      pick.piece = variant.piece || null;
+      pick.color = variant.color || null;
+      pick.size = variant.size || null;
+      pick.image = variant.image || null;
+    } else {
+      if (!raw.color && !raw.size) return null;
+      pick.piece = raw.piece || null;
+      pick.color = raw.color || null;
+      pick.size = raw.size || null;
+    }
+    pick.id = pickIdentity(pick);
+    pick.savedAt = new Date().toISOString();
+    return pick;
+  }
+
+  function mergePicks(existing, incoming) {
+    var list = Array.isArray(existing) ? existing.slice() : [];
+    if (!incoming) return list;
+    if (!incoming.id) incoming.id = pickIdentity(incoming);
+    var found = -1;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && list[i].id === incoming.id) { found = i; break; }
+    }
+    if (found >= 0) list[found] = incoming;
+    else list.push(incoming);
+    return list;
+  }
+
+  function pickExists(picks, id) {
+    if (!id) return false;
+    for (var i = 0; i < picks.length; i++) {
+      if (picks[i] && picks[i].id === id) return true;
+    }
+    return false;
+  }
+
+  function activePick(record) {
+    var picks = (record && record.picks) || [];
+    if (!picks.length) return null;
+    var id = record.activePick;
+    for (var i = 0; i < picks.length; i++) {
+      if (picks[i] && picks[i].id === id) return picks[i];
+    }
+    return picks[picks.length - 1];
+  }
+
+  function activePickColor(record) {
+    var pick = activePick(record);
+    return pick && pick.color ? pick.color : null;
+  }
+
   function upsertRecord(record) {
     var all = loadAll();
+    var incomingPick = record.pick || null;
+    var incomingId = incomingPick ? (incomingPick.id || pickIdentity(incomingPick)) : null;
     for (var i = 0; i < all.length; i++) {
       if (recordsMatch(all[i], record)) {
         record.history = pushHistory(all[i].history, compactSnapshot(all[i]));
+        record.picks = mergePicks(all[i].picks, incomingPick);
+        record.activePick = incomingId || all[i].activePick || null;
+        if (!pickExists(record.picks, record.activePick)) {
+          record.activePick = record.picks.length ? record.picks[record.picks.length - 1].id : null;
+        }
+        delete record.pick;
         all[i] = record;
         saveAll(all);
         return i;
       }
     }
+    record.picks = mergePicks(null, incomingPick);
+    record.activePick = incomingId || (record.picks.length ? record.picks[0].id : null);
+    delete record.pick;
     all.push(record);
     saveAll(all);
     return all.length - 1;
@@ -1223,6 +1345,13 @@
     return (meta && meta.content) || 'USD';
   }
 
+  function variantImage(v) {
+    var image = v && (v.featured_image || v.image);
+    if (!image) return null;
+    if (typeof image === 'string') return image;
+    return image.src || image.url || null;
+  }
+
   function normalize(product, handle, currency) {
     var optionNames = [];
     var opts = product.options || [];
@@ -1253,6 +1382,7 @@
           : null,
         available: !!v.available,
         sku: v.sku || null,
+        image: variantImage(v),
         options: optionValues,
         url: location.origin + location.pathname + '?variant=' + v.id
       });
@@ -1392,6 +1522,22 @@
     return null;
   }
 
+  function shopifySelectedPick() {
+    var variantId = null;
+    var match = String(location.search || '').match(/[?&]variant=([^&#]+)/);
+    if (match) variantId = match[1];
+    if (!variantId) {
+      var input = document.querySelector('form[action*="/cart/add"] [name="id"], form[action*="cart/add"] input[name="id"], input[name="id"]');
+      if (input && input.value) variantId = input.value;
+    }
+    if (!variantId) {
+      var checked = document.querySelector('[data-variant-id][aria-checked="true"], [data-variant-id].selected, input[name="id"]:checked');
+      if (checked) variantId = checked.getAttribute('data-variant-id') || checked.value;
+    }
+    if (!variantId) return null;
+    return { variantId: variantId };
+  }
+
   registerAdapter({
     id: 'shopify',
     label: '42Lolita and other Shopify stores',
@@ -1409,7 +1555,8 @@
         }
         return normalize(product, handle, detectCurrency());
       });
-    }
+    },
+    pick: shopifySelectedPick
   });
 
   function domText(selector) {
@@ -1730,7 +1877,11 @@
   }
 
   function amazonDimensionLabel(id) {
-    var name = String(id || '').replace(/^variation_/, '').replace(/_name$/, '').replace(/_/g, ' ');
+    var name = String(id || '')
+      .replace(/^variation_/, '')
+      .replace(/^inline-twister-expander-content-/, '')
+      .replace(/_name$/, '')
+      .replace(/_/g, ' ');
     if (/colou?r/i.test(name)) return 'Color';
     if (/size|length/i.test(name)) return 'Size';
     return titleCase(name) || 'Option';
@@ -1759,7 +1910,7 @@
   }
 
   function amazonVariants(price, soldOut) {
-    var containers = document.querySelectorAll('[id^="variation_"]');
+    var containers = document.querySelectorAll('[id^="variation_"], [id^="inline-twister-expander-content-"]');
     var colorDim = null;
     var sizeDim = null;
     var otherDim = null;
@@ -1769,9 +1920,10 @@
       var values = amazonDimensionValues(containers[c]);
       if (!values.length) continue;
       var dim = { name: amazonDimensionLabel(id), values: values };
-      if (!colorDim && /colou?r/i.test(id)) colorDim = dim;
-      else if (!sizeDim && /size|length/i.test(id)) sizeDim = dim;
-      else if (!otherDim) otherDim = dim;
+      var kind = /colou?r/i.test(id) ? 'color' : (/size|length/i.test(id) ? 'size' : 'other');
+      if (kind === 'color' && !colorDim) colorDim = dim;
+      else if (kind === 'size' && !sizeDim) sizeDim = dim;
+      else if (kind === 'other' && !otherDim) otherDim = dim;
     }
     var options = [];
     var combos = [];
@@ -1843,13 +1995,53 @@
     }, amazonAsin() || currentPageId(), currency));
   }
 
+  function amazonSelectedOptionText(containerId) {
+    var selectors = [
+      '#' + containerId + ' .a-button-selected .a-button-text',
+      '#' + containerId + ' .a-button-selected',
+      '#' + containerId + ' li[data-initiallyselected="true"] .a-button-text',
+      '#' + containerId + ' li[data-initiallyselected="true"]',
+      '#' + containerId + ' .swatchSelect'
+    ];
+    for (var i = 0; i < selectors.length; i++) {
+      var el = document.querySelector(selectors[i]);
+      if (!el) continue;
+      var text = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!text && el.querySelector) {
+        var img = el.querySelector('img');
+        if (img) text = String(img.getAttribute('alt') || img.getAttribute('title') || '').trim();
+      }
+      if (text) return text;
+    }
+    var options = document.querySelectorAll('#' + containerId + ' option');
+    for (var o = 0; o < options.length; o++) {
+      var selected = options[o].selected || options[o].getAttribute('selected') != null;
+      if (!selected) continue;
+      var optionText = String(options[o].textContent || '').trim();
+      if (optionText) return optionText;
+    }
+    return '';
+  }
+
+  function amazonSelectedPick() {
+    var color = amazonSelectedOptionText('variation_color_name') ||
+      amazonSelectedOptionText('native_dropdown_selected_color_name') ||
+      amazonSelectedOptionText('inline-twister-expander-content-color_name');
+    var size = amazonSelectedOptionText('variation_size_name') ||
+      amazonSelectedOptionText('native_dropdown_selected_size_name') ||
+      amazonSelectedOptionText('inline-twister-expander-content-size_name');
+    if (!color && !size) return null;
+    return { color: color || null, size: size || null };
+  }
+
   registerAdapter({
     id: 'amazon',
     label: 'Amazon',
     matches: function () {
       return amazonHost() && !!amazonAsin();
     },
-    collect: collectAmazon
+    collect: collectAmazon,
+    pick: amazonSelectedPick
   });
 
   function findEmbeddedJson(names) {
@@ -2292,6 +2484,28 @@
     }, handle, currency));
   }
 
+  function aliexpressSelectedPick() {
+    var props = [];
+    try { props = aliexpressDomProperties(); } catch (e) { props = []; }
+    var color = null;
+    var size = null;
+    var options = [];
+    for (var i = 0; i < props.length; i++) {
+      var name = String(props[i].name || '');
+      var value = props[i].selected || '';
+      if (!value) continue;
+      options.push({ name: name, value: value });
+      var lower = name.toLowerCase();
+      if (color == null && /colou?r/.test(lower)) color = value;
+      else if (size == null && /size|length/.test(lower)) size = value;
+    }
+    if (!options.length && !color && !size) return null;
+    var raw = { options: options };
+    if (color) raw.color = color;
+    if (size) raw.size = size;
+    return raw;
+  }
+
   registerAdapter({
     id: 'aliexpress',
     label: 'AliExpress item pages',
@@ -2300,13 +2514,22 @@
       return (/(^|\.)aliexpress\.com$/.test(host) || /(^|\.)aliexpress\.us$/.test(host)) &&
         /\/(?:item|i)\/\d+/.test(location.pathname || '');
     },
-    collect: collectAliExpress
+    collect: collectAliExpress,
+    pick: aliexpressSelectedPick
   });
 
   function collectProduct() {
     var adapter = adapterFor(location.href);
     if (!adapter) return Promise.reject(new Error('unsupported site'));
-    return adapter.collect();
+    return adapter.collect().then(function (record) {
+      if (adapter.pick) {
+        try {
+          var raw = adapter.pick();
+          if (raw) record.pick = makePick(record, raw);
+        } catch (e) {}
+      }
+      return record;
+    });
   }
 
   function toTsv(products) {
@@ -2391,7 +2614,9 @@
       total: Math.round((Number(data.total) || 0) * 100) / 100,
       available: !!data.available,
       complete: !!data.complete,
-      missing: data.missing || []
+      missing: data.missing || [],
+      picks: p.picks || [],
+      activePick: p.activePick || null
     };
   }
 
@@ -2675,17 +2900,27 @@
     return out;
   }
 
+  function preferRow(candidate, current, pickColor) {
+    if (pickColor) {
+      var candidateIsPick = String(candidate.color || '') === String(pickColor);
+      var currentIsPick = String(current.color || '') === String(pickColor);
+      if (candidateIsPick !== currentIsPick) return candidateIsPick;
+    }
+    return betterSummaryRow(candidate, current);
+  }
+
   function collapseListingRows(rows) {
     var groups = {};
     var order = [];
     for (var i = 0; i < rows.length; i++) {
       var key = recordItemKey(rows[i]);
       if (!groups[key]) {
-        groups[key] = { row: rows[i], colors: 1 };
+        groups[key] = { row: rows[i], colors: 1, pickColor: activePickColor(rows[i]) };
         order.push(key);
       } else {
         groups[key].colors++;
-        if (betterSummaryRow(rows[i], groups[key].row)) groups[key].row = rows[i];
+        if (!groups[key].pickColor) groups[key].pickColor = activePickColor(rows[i]);
+        if (preferRow(rows[i], groups[key].row, groups[key].pickColor)) groups[key].row = rows[i];
       }
     }
     var out = [];
@@ -2901,6 +3136,28 @@
 
     wrap.appendChild(title);
     wrap.appendChild(meta);
+    var picks = (row && row.picks) || [];
+    if (picks.length) {
+      var picksRow = document.createElement('div');
+      picksRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin-top:4px;';
+      var picksLabel = document.createElement('span');
+      picksLabel.textContent = picks.length > 1 ? 'Picks:' : 'Pick:';
+      picksLabel.style.cssText = 'color:#666;font-size:11px;';
+      picksRow.appendChild(picksLabel);
+      var activePickId = (activePick(row) || {}).id || null;
+      for (var pi = 0; pi < picks.length; pi++) {
+        var pick = picks[pi];
+        var active = pick.id === activePickId;
+        var chip = document.createElement('span');
+        chip.textContent = pickLabel(pick);
+        chip.title = active ? 'Active pick' : 'Pick';
+        chip.style.cssText = 'font-size:11px;padding:2px 8px;border-radius:10px;border:1px solid ' +
+          (active ? '#c94f86' : '#ccc') + ';background:' + (active ? '#e6659b' : '#fff') +
+          ';color:' + (active ? '#fff' : '#555') + ';';
+        picksRow.appendChild(chip);
+      }
+      wrap.appendChild(picksRow);
+    }
     if (names.length) wrap.appendChild(pieces);
     wrap.appendChild(actions);
     return wrap;
@@ -3345,10 +3602,12 @@
 
   function newCompareSide(record) {
     var options = compareOptions(record);
+    var pickColor = activePickColor(record);
+    if (pickColor && options.colors.indexOf(pickColor) < 0) pickColor = null;
     var side = {
       record: record,
       options: options,
-      color: options.colors[0] || '',
+      color: pickColor || options.colors[0] || '',
       picks: {},
       include: {}
     };
@@ -4751,6 +5010,16 @@
       amazonSoldOut: amazonSoldOut,
       amazonVariants: amazonVariants,
       jsonLdPrice: jsonLdPrice,
+      pickIdentity: pickIdentity,
+      pickLabel: pickLabel,
+      makePick: makePick,
+      mergePicks: mergePicks,
+      activePick: activePick,
+      activePickColor: activePickColor,
+      shopifySelectedPick: shopifySelectedPick,
+      amazonSelectedPick: amazonSelectedPick,
+      aliexpressSelectedPick: aliexpressSelectedPick,
+      variantImage: variantImage,
       findSkuBaseObject: findSkuBaseObject,
       findImageList: findImageList,
       collectImages: collectImages,
