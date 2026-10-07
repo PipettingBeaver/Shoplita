@@ -3,7 +3,7 @@
 // @namespace    shoplita
 // @updateURL    https://github.com/PipettingBeaver/Shoplita/raw/refs/heads/main/Shoplita.user.js
 // @downloadURL  https://github.com/PipettingBeaver/Shoplita/raw/refs/heads/main/Shoplita.user.js
-// @version      2.15.1
+// @version      2.16.0
 // @description  Saves prices and pieces from lolita shops (42Lolita, Devilinspired, My-Lolita-Dress, AliExpress, Amazon and other pages) into one wishlist. Keeps dated snapshots, computes coordinated set totals, ranks favourites, marks availability, organizes items into named sets and saves mix-and-match outfits, exports/imports JSON, TSV, Excel-ready CSV and Shoplita share files, and compares items, sets and outfits with searchable pickers, images and live totals in a minimizable panel.
 // @author       tan
 // @match        https://42lolita.com/*
@@ -1155,9 +1155,13 @@
     }
     for (var i = 0; i < all.length; i++) indexRecord(all[i], i);
     var result = { added: 0, updated: 0, skipped: 0, total: 0 };
+    var importedKeys = [];
+    var seenKeys = {};
     for (var j = 0; j < incoming.length; j++) {
       var record = sanitizeRecord(incoming[j]);
       if (!record) { result.skipped++; continue; }
+      var itemKey = recordItemKey(record);
+      if (itemKey && !seenKeys[itemKey]) { seenKeys[itemKey] = true; importedKeys.push(itemKey); }
       var keys = listingKeys(record);
       var matchIndex = -1;
       for (var mk = 0; mk < keys.length; mk++) {
@@ -1245,7 +1249,135 @@
       saveOutfits(outfits);
     }
     result.total = all.length;
+    result.items = importedKeys;
     return result;
+  }
+
+  function tagImportedItems(setName, itemKeys) {
+    var name = String(setName == null ? '' : setName).trim();
+    if (!name || !itemKeys || !itemKeys.length) return 0;
+    var collection = createCollection(name);
+    if (!collection) return 0;
+    var tagged = 0;
+    for (var i = 0; i < itemKeys.length; i++) {
+      if (addCollectionItem(collection.id, itemKeys[i])) tagged++;
+    }
+    return tagged;
+  }
+
+  function importData() {
+    pickImportFile(function (text) {
+      var result = mergeImport(text);
+      if (result.error) { toast('Import failed: ' + result.error, true); return; }
+      if (refreshStatus) refreshStatus();
+      toast('Imported: ' + result.added + ' new, ' + result.updated + ' updated, ' + result.skipped + ' skipped');
+      if (result.items && result.items.length) promptImportTags(result.items);
+    });
+  }
+
+  function promptImportTags(itemKeys) {
+    var keys = (itemKeys || []).filter(function (k) { return !!k; });
+    if (!keys.length) return;
+    var collections = loadCollections();
+    var selected = {};
+    var overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:999999;display:flex;align-items:center;justify-content:center;';
+    var card = document.createElement('div');
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-modal', 'true');
+    card.setAttribute('aria-label', 'Tag imported items');
+    card.style.cssText = 'background:#fff;color:#222;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,.25);' +
+      'font:12px/1.4 sans-serif;width:340px;max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);overflow:auto;' +
+      'padding:14px;display:flex;flex-direction:column;gap:10px;';
+
+    var title = document.createElement('strong');
+    title.textContent = 'Tag imported items';
+    card.appendChild(title);
+    var sub = document.createElement('div');
+    sub.textContent = keys.length + ' imported listing(s). Optionally tag them:';
+    sub.style.cssText = 'color:#666;';
+    card.appendChild(sub);
+
+    if (collections.length) {
+      var existingLabel = document.createElement('div');
+      existingLabel.textContent = 'Existing sets';
+      existingLabel.style.cssText = 'font-size:10px;font-weight:700;color:#666;text-transform:uppercase;letter-spacing:.5px;';
+      card.appendChild(existingLabel);
+      var chips = document.createElement('div');
+      chips.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;';
+      for (var i = 0; i < collections.length; i++) {
+        (function (collection) {
+          var chip = document.createElement('button');
+          chip.type = 'button';
+          chip.className = 'shoplita-focus';
+          chip.textContent = collection.name;
+          chip.setAttribute('aria-pressed', 'false');
+          chip.style.cssText = collectionChipStyle(false);
+          chip.addEventListener('click', function () {
+            selected[collection.id] = !selected[collection.id];
+            chip.setAttribute('aria-pressed', selected[collection.id] ? 'true' : 'false');
+            chip.style.cssText = collectionChipStyle(!!selected[collection.id]);
+          });
+          chips.appendChild(chip);
+        })(collections[i]);
+      }
+      card.appendChild(chips);
+    }
+
+    var newLabel = document.createElement('div');
+    newLabel.textContent = 'New set';
+    newLabel.style.cssText = 'font-size:10px;font-weight:700;color:#666;text-transform:uppercase;letter-spacing:.5px;';
+    card.appendChild(newLabel);
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = 'New set name (optional)';
+    input.setAttribute('aria-label', 'New set name');
+    input.style.cssText = 'padding:4px 6px;border:1px solid #ccc;border-radius:6px;font:inherit;';
+    card.appendChild(input);
+
+    var actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;';
+    function onKey(event) {
+      if (event && event.key === 'Escape') close();
+    }
+    function close() {
+      document.removeEventListener('keydown', onKey);
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    }
+    var skip = document.createElement('button');
+    skip.type = 'button';
+    skip.className = 'shoplita-focus';
+    skip.textContent = 'Skip';
+    skip.style.cssText = 'cursor:pointer;border:1px solid #999;background:#fff;color:#555;border-radius:8px;padding:6px 12px;font-weight:600;';
+    skip.addEventListener('click', close);
+    var apply = document.createElement('button');
+    apply.type = 'button';
+    apply.className = 'shoplita-focus';
+    apply.textContent = 'Add tags';
+    apply.style.cssText = 'cursor:pointer;border:1px solid #c94f86;background:#e6659b;color:#fff;border-radius:8px;padding:6px 12px;font-weight:600;';
+    apply.addEventListener('click', function () {
+      var added = 0;
+      for (var c = 0; c < collections.length; c++) {
+        if (!selected[collections[c].id]) continue;
+        for (var k = 0; k < keys.length; k++) {
+          if (addCollectionItem(collections[c].id, keys[k])) added++;
+        }
+      }
+      var newName = String(input.value || '').trim();
+      if (newName) added += tagImportedItems(newName, keys);
+      close();
+      if (refreshStatus) refreshStatus();
+      if (added) toast('Tagged ' + added + ' item(s)');
+    });
+    actions.appendChild(skip);
+    actions.appendChild(apply);
+    card.appendChild(actions);
+
+    overlay.addEventListener('click', function (event) { if (event.target === overlay) close(); });
+    document.addEventListener('keydown', onKey);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    input.focus();
   }
 
   function pickImportFile(onDone) {
@@ -4833,12 +4965,7 @@
     });
 
     importBtn.addEventListener('click', function () {
-      pickImportFile(function (text) {
-        var result = mergeImport(text);
-        if (result.error) { toast('Import failed: ' + result.error, true); return; }
-        refreshStatus();
-        toast('Imported: ' + result.added + ' new, ' + result.updated + ' updated, ' + result.skipped + ' skipped');
-      });
+      importData();
     });
   }
 
@@ -4915,12 +5042,7 @@
       exportForUserscript(all);
     });
     GM_registerMenuCommand('Import data', function () {
-      pickImportFile(function (text) {
-        var result = mergeImport(text);
-        if (result.error) { toast('Import failed: ' + result.error, true); return; }
-        if (refreshStatus) refreshStatus();
-        toast('Imported: ' + result.added + ' new, ' + result.updated + ' updated, ' + result.skipped + ' skipped');
-      });
+      importData();
     });
     GM_registerMenuCommand('Clear saved info', function () {
       if (!confirm('Delete all saved Shoplita product info, priority scores and availability marks?')) return;
@@ -5033,6 +5155,8 @@
       saveUi: saveUi,
       removeItemGroup: removeItemGroup,
       mergeImport: mergeImport,
+      tagImportedItems: tagImportedItems,
+      promptImportTags: promptImportTags,
       variantPieces: variantPieces,
       buildSetRows: buildSetRows,
       setMatrix: setMatrix,
