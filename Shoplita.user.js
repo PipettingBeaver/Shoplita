@@ -3,8 +3,8 @@
 // @namespace    shoplita
 // @updateURL    https://github.com/PipettingBeaver/Shoplita/raw/refs/heads/main/Shoplita.user.js
 // @downloadURL  https://github.com/PipettingBeaver/Shoplita/raw/refs/heads/main/Shoplita.user.js
-// @version      2.16.0
-// @description  Saves prices and pieces from lolita shops (42Lolita, Devilinspired, My-Lolita-Dress, AliExpress, Amazon and other pages) into one wishlist. Keeps dated snapshots, computes coordinated set totals, ranks favourites, marks availability, organizes items into named sets and saves mix-and-match outfits, exports/imports JSON, TSV, Excel-ready CSV and Shoplita share files, and compares items, sets and outfits with searchable pickers, images and live totals in a minimizable panel.
+// @version      2.17.0
+// @description  Saves prices and pieces from lolita shops (42Lolita, Devilinspired, My-Lolita-Dress, AliExpress, Amazon and other pages) into one wishlist. Keeps dated snapshots, computes coordinated set totals, ranks favourites, marks availability, organizes items into named tags and saves mix-and-match outfits, exports/imports JSON, TSV, Excel-ready CSV and Shoplita share files, and compares items, sets and outfits with searchable pickers, images and live totals in a minimizable panel.
 // @author       tan
 // @match        https://42lolita.com/*
 // @match        https://www.42lolita.com/*
@@ -887,7 +887,7 @@
     }
     if (!first) return null;
     return {
-      name: 'Set: ' + collection.name,
+      name: 'Tag: ' + collection.name,
       handle: collection.id,
       source: 'shoplita.set',
       url: first.url,
@@ -1275,7 +1275,7 @@
     });
   }
 
-  function promptImportTags(itemKeys) {
+  function promptTagItems(itemKeys, heading, note, onDone) {
     var keys = (itemKeys || []).filter(function (k) { return !!k; });
     if (!keys.length) return;
     var collections = loadCollections();
@@ -1285,22 +1285,22 @@
     var card = document.createElement('div');
     card.setAttribute('role', 'dialog');
     card.setAttribute('aria-modal', 'true');
-    card.setAttribute('aria-label', 'Tag imported items');
+    card.setAttribute('aria-label', heading || 'Add tags');
     card.style.cssText = 'background:#fff;color:#222;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,.25);' +
       'font:12px/1.4 sans-serif;width:340px;max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);overflow:auto;' +
       'padding:14px;display:flex;flex-direction:column;gap:10px;';
 
     var title = document.createElement('strong');
-    title.textContent = 'Tag imported items';
+    title.textContent = heading || 'Add tags';
     card.appendChild(title);
     var sub = document.createElement('div');
-    sub.textContent = keys.length + ' imported listing(s). Optionally tag them:';
+    sub.textContent = note || (keys.length + ' listing(s). Optionally tag them:');
     sub.style.cssText = 'color:#666;';
     card.appendChild(sub);
 
     if (collections.length) {
       var existingLabel = document.createElement('div');
-      existingLabel.textContent = 'Existing sets';
+      existingLabel.textContent = 'Existing tags';
       existingLabel.style.cssText = 'font-size:10px;font-weight:700;color:#666;text-transform:uppercase;letter-spacing:.5px;';
       card.appendChild(existingLabel);
       var chips = document.createElement('div');
@@ -1325,13 +1325,13 @@
     }
 
     var newLabel = document.createElement('div');
-    newLabel.textContent = 'New set';
+    newLabel.textContent = 'New tag';
     newLabel.style.cssText = 'font-size:10px;font-weight:700;color:#666;text-transform:uppercase;letter-spacing:.5px;';
     card.appendChild(newLabel);
     var input = document.createElement('input');
     input.type = 'text';
-    input.placeholder = 'New set name (optional)';
-    input.setAttribute('aria-label', 'New set name');
+    input.placeholder = 'New tag name (optional)';
+    input.setAttribute('aria-label', 'New tag name');
     input.style.cssText = 'padding:4px 6px;border:1px solid #ccc;border-radius:6px;font:inherit;';
     card.appendChild(input);
 
@@ -1368,6 +1368,7 @@
       close();
       if (refreshStatus) refreshStatus();
       if (added) toast('Tagged ' + added + ' item(s)');
+      if (onDone) onDone();
     });
     actions.appendChild(skip);
     actions.appendChild(apply);
@@ -1378,6 +1379,11 @@
     overlay.appendChild(card);
     document.body.appendChild(overlay);
     input.focus();
+  }
+
+  function promptImportTags(itemKeys) {
+    var count = (itemKeys || []).length;
+    return promptTagItems(itemKeys, 'Tag imported items', count + ' imported listing(s). Optionally tag them:', null);
   }
 
   function pickImportFile(onDone) {
@@ -2911,7 +2917,7 @@
     }
     var header = ['Product', 'Source', 'Type', 'Set name', 'Color', 'Included pieces'];
     header = header.concat(columns);
-    header = header.concat(['Total', 'Currency', 'In stock', 'Complete', 'Missing', 'Liked at', 'Sets', 'Brand', 'Product code', 'URL', 'Saved at']);
+    header = header.concat(['Total', 'Currency', 'In stock', 'Complete', 'Missing', 'Liked at', 'Tags', 'Brand', 'Product code', 'URL', 'Saved at']);
     var typeLabels = { set: 'Set', bundle: 'Bundle', item: 'Item' };
     var priority = loadPriority();
     var collections = loadCollections();
@@ -3189,7 +3195,7 @@
     actions.style.cssText = 'margin-top:4px;text-align:right;';
     var memberships = collectionsForItem(recordItemKey(row));
     var setSelect = document.createElement('select');
-    setSelect.setAttribute('aria-label', 'Add to set');
+    setSelect.setAttribute('aria-label', 'Add tag');
     setSelect.style.cssText = 'font-size:11px;padding:2px 4px;border:1px solid ' +
       (memberships.length ? '#c94f86' : '#999') + ';border-radius:6px;margin-right:6px;max-width:140px;' +
       (memberships.length ? 'color:#c94f86;font-weight:600;' : '');
@@ -3197,7 +3203,7 @@
     setDisplay.value = '__display__';
     var membershipNames = [];
     for (var mn = 0; mn < memberships.length; mn++) membershipNames.push(memberships[mn].name);
-    setDisplay.textContent = membershipNames.length ? membershipNames.join(', ') : 'Set\u2026';
+    setDisplay.textContent = membershipNames.length ? membershipNames.join(', ') : 'Tag\u2026';
     setDisplay.selected = true;
     setSelect.appendChild(setDisplay);
     var allCollections = loadCollections();
@@ -3213,11 +3219,11 @@
     }
     var newSetOption = document.createElement('option');
     newSetOption.value = '__new__';
-    newSetOption.textContent = '+ New set\u2026';
+    newSetOption.textContent = '+ New tag\u2026';
     setSelect.appendChild(newSetOption);
     setSelect.addEventListener('change', function () {
       if (setSelect.value === '__new__') {
-        var name = window.prompt('New set name');
+        var name = window.prompt('New tag name');
         if (name) {
           var created = createCollection(name);
           if (created) {
@@ -3228,7 +3234,7 @@
       } else if (setSelect.value && setSelect.value !== '__display__') {
         var added = toggleCollectionItem(setSelect.value, recordItemKey(row));
         var collection = findCollection(setSelect.value);
-        var collectionName = collection ? collection.name : 'set';
+        var collectionName = collection ? collection.name : 'tag';
         toast(added ? 'Saved to "' + collectionName + '"!' : 'Removed from "' + collectionName + '"');
       }
       setSelect.value = '__display__';
@@ -3329,11 +3335,11 @@
         var remove = document.createElement('button');
         remove.type = 'button';
         remove.textContent = '\u00d7';
-        remove.setAttribute('aria-label', 'Delete set ' + collection.name);
+        remove.setAttribute('aria-label', 'Delete tag ' + collection.name);
         remove.style.cssText = 'margin-left:2px;border:none;background:none;color:#999;cursor:pointer;font-size:11px;';
         remove.addEventListener('click', function (event) {
           if (event && event.stopPropagation) event.stopPropagation();
-          if (!confirm('Delete set "' + collection.name + '"?')) return;
+          if (!confirm('Delete tag "' + collection.name + '"?')) return;
           deleteCollection(collection.id);
           if (savedFilter.collection === collection.id) savedFilter.collection = null;
           renderSavedPanel();
@@ -3345,10 +3351,10 @@
     }
     var addChip = document.createElement('button');
     addChip.type = 'button';
-    addChip.textContent = '+ New set';
+    addChip.textContent = '+ New tag';
     addChip.style.cssText = collectionChipStyle(false);
     addChip.addEventListener('click', function () {
-      var name = window.prompt('New set name');
+      var name = window.prompt('New tag name');
       if (!name) return;
       createCollection(name);
       renderSavedPanel();
@@ -3410,29 +3416,29 @@
     while (savedPanelTarget.firstChild) savedPanelTarget.removeChild(savedPanelTarget.firstChild);
     var label = document.createElement('label');
     label.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;color:#555;';
-    label.textContent = 'Add new items to:';
+    label.textContent = 'Add new items to tag:';
     var select = document.createElement('select');
-    select.setAttribute('aria-label', 'Add new items to set');
+    select.setAttribute('aria-label', 'Add new items to tag');
     select.style.cssText = 'flex:1;padding:2px 6px;border:1px solid #ccc;border-radius:6px;font-size:11px;';
     var none = document.createElement('option');
     none.value = '';
-    none.textContent = 'No set';
+    none.textContent = 'No tag';
     select.appendChild(none);
     var collections = loadCollections();
     for (var i = 0; i < collections.length; i++) {
       var option = document.createElement('option');
       option.value = collections[i].id;
-      option.textContent = 'Set: ' + collections[i].name;
+      option.textContent = 'Tag: ' + collections[i].name;
       select.appendChild(option);
     }
     var newOption = document.createElement('option');
     newOption.value = '__new__';
-    newOption.textContent = '+ New set\u2026';
+    newOption.textContent = '+ New tag\u2026';
     select.appendChild(newOption);
     select.value = getDefaultSetId() || '';
     select.addEventListener('change', function () {
       if (select.value === '__new__') {
-        var name = window.prompt('New set name');
+        var name = window.prompt('New tag name');
         if (name) {
           var created = createCollection(name);
           if (created) setDefaultSetId(created.id);
@@ -4161,11 +4167,11 @@
       for (var si = 0; si < collections.length; si++) {
         setOptions.push({
           value: 'set:' + collections[si].id,
-          label: 'Set: ' + collections[si].name + ' (' +
+          label: 'Tag: ' + collections[si].name + ' (' +
             (Array.isArray(collections[si].items) ? collections[si].items.length : 0) + ')'
         });
       }
-      groups.push({ label: 'Sets ----', options: setOptions });
+      groups.push({ label: 'Tags ----', options: setOptions });
     }
     var outfits = loadOutfits();
     if (outfits.length) {
@@ -4308,10 +4314,45 @@
 
     var source = record.source || '42lolita.com';
     if (source.indexOf('shoplita.') !== 0) {
-      var sourceLine = document.createElement('div');
+      var sourceRow = document.createElement('div');
+      sourceRow.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
+      var sourceLine = document.createElement('span');
       sourceLine.style.cssText = 'color:#888;font-size:11px;';
       sourceLine.textContent = 'Listing from ' + source;
-      col.appendChild(sourceLine);
+      sourceRow.appendChild(sourceLine);
+
+      var memberships = collectionsForItem(recordItemKey(record));
+      var tagNames = [];
+      for (var tm = 0; tm < memberships.length; tm++) tagNames.push(memberships[tm].name);
+      var bubble = document.createElement('span');
+      bubble.setAttribute('aria-label', tagNames.length ? 'Tags: ' + tagNames.join(', ') : 'No tags');
+      if (tagNames.length) bubble.title = tagNames.join(', ');
+      bubble.style.cssText = 'display:inline-flex;align-items:center;gap:5px;min-width:0;max-width:180px;' +
+        'background:#f3e6f0;color:#8a3f68;border:1px solid #e2c3d8;border-radius:10px;padding:1px 8px;font-size:11px;';
+      var dot = document.createElement('span');
+      dot.style.cssText = 'width:6px;height:6px;border-radius:50%;background:#c94f86;flex:none;';
+      bubble.appendChild(dot);
+      var bubbleText = document.createElement('span');
+      var shown = tagNames.slice(0, 3);
+      bubbleText.textContent = tagNames.length
+        ? shown.join(', ') + (tagNames.length > shown.length ? ' +' + (tagNames.length - shown.length) : '')
+        : 'No tags';
+      bubbleText.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      bubble.appendChild(bubbleText);
+      sourceRow.appendChild(bubble);
+
+      var addTag = document.createElement('button');
+      addTag.type = 'button';
+      addTag.className = 'shoplita-focus';
+      addTag.textContent = 'Add tag';
+      addTag.style.cssText = 'cursor:pointer;font-size:11px;padding:2px 8px;border:1px solid #c94f86;' +
+        'background:#fff;color:#c94f86;border-radius:10px;font-weight:600;';
+      addTag.addEventListener('click', function () {
+        promptTagItems([recordItemKey(record)], 'Add tag', record.name, renderCompare);
+      });
+      sourceRow.appendChild(addTag);
+
+      col.appendChild(sourceRow);
     }
     var range = variantPriceRange(record);
     if (range.min != null) {
@@ -4455,16 +4496,16 @@
     var allCollections = loadCollections();
     if (allCollections.length) {
       var setFilter = document.createElement('select');
-      setFilter.setAttribute('aria-label', 'Filter by set');
+      setFilter.setAttribute('aria-label', 'Filter by tag');
       setFilter.style.cssText = 'max-width:180px;padding:3px 6px;border:1px solid #ccc;border-radius:6px;font-size:12px;';
       var allOption = document.createElement('option');
       allOption.value = '';
-      allOption.textContent = 'All sets';
+      allOption.textContent = 'All tags';
       setFilter.appendChild(allOption);
       for (var sc = 0; sc < allCollections.length; sc++) {
         var setChoice = document.createElement('option');
         setChoice.value = allCollections[sc].id;
-        setChoice.textContent = 'Set: ' + allCollections[sc].name;
+        setChoice.textContent = 'Tag: ' + allCollections[sc].name;
         setFilter.appendChild(setChoice);
       }
       setFilter.value = compareState.filterSet || '';
@@ -5157,6 +5198,7 @@
       mergeImport: mergeImport,
       tagImportedItems: tagImportedItems,
       promptImportTags: promptImportTags,
+      promptTagItems: promptTagItems,
       variantPieces: variantPieces,
       buildSetRows: buildSetRows,
       setMatrix: setMatrix,
