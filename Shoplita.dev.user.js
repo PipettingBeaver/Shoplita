@@ -3,7 +3,7 @@
 // @namespace    shoplita
 // @updateURL    http://127.0.0.1:8791/Shoplita.dev.user.js
 // @downloadURL  http://127.0.0.1:8791/Shoplita.dev.user.js
-// @version      2.18.0
+// @version      2.19.0
 // @description  Saves prices and pieces from lolita shops (42Lolita, Devilinspired, My-Lolita-Dress, AliExpress, Amazon and other pages) into one wishlist. Keeps dated snapshots, computes coordinated set totals, ranks favourites, marks availability, organizes items into named tags and saves mix-and-match outfits, exports/imports JSON, TSV, Excel-ready CSV and Shoplita share files, and compares items, sets and outfits with searchable pickers, images and live totals in a minimizable panel.
 // @author       tan
 // @match        https://42lolita.com/*
@@ -1138,6 +1138,8 @@
       image: raw.image,
       images: raw.images,
       savedAt: raw.savedAt,
+      shipping: raw.shipping,
+      shippingCurrency: raw.shippingCurrency,
       variants: raw.variants
     }));
     if (!record.name) record.name = record.handle || 'Imported product';
@@ -2549,6 +2551,57 @@
     return variants;
   }
 
+  function aliexpressFreightInfo(node, depth) {
+    if (!node || typeof node !== 'object' || depth > 6) return null;
+    if (node.freightCalculateInfo && Array.isArray(node.freightCalculateInfo.freight)) return node.freightCalculateInfo;
+    if (Array.isArray(node.freight) && node.freight.length) {
+      var first = node.freight[0];
+      if (first && typeof first === 'object' && (first.freightAmount || first.amount || first.displayAmount != null)) return node;
+    }
+    for (var key in node) {
+      if (!hasOwn(node, key)) continue;
+      var found = aliexpressFreightInfo(node[key], depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function aliexpressShipping(data, fallbackCurrency) {
+    var info = data && data.shippingModule && data.shippingModule.freightCalculateInfo;
+    if (!info) info = aliexpressFreightInfo(data, 0);
+    if (!info) return null;
+    var options = Array.isArray(info.freight) ? info.freight : [];
+    var best = null;
+    for (var i = 0; i < options.length; i++) {
+      var option = options[i] || {};
+      var amount = option.freightAmount || option;
+      var value = amount && amount.value != null ? Number(amount.value) : null;
+      if (value == null || isNaN(value)) {
+        var formatted = amount && (amount.formattedAmount || amount.formatedAmount);
+        if (typeof formatted === 'number') value = formatted;
+        else if (formatted) value = parsePriceNumber(formatted);
+      }
+      if (value == null || isNaN(value)) continue;
+      var currency = (amount && (amount.currency || amount.currencyCode)) ||
+        info.currency || info.currencyCode || fallbackCurrency || null;
+      if (!best || value < best.value) best = { value: value, currency: currency };
+    }
+    if (!best && info.freeShippingText) best = { value: 0, currency: fallbackCurrency || null };
+    return best;
+  }
+
+  function aliexpressDomShipping() {
+    var nodes = document.querySelectorAll('[class*="shipping"], [class*="logistics"], [class*="delivery"]');
+    for (var i = 0; i < nodes.length && i < 40; i++) {
+      var text = String(nodes[i].textContent || '').replace(/\s+/g, ' ').trim();
+      if (!text || text.length > 120) continue;
+      if (/free shipping/i.test(text)) return { value: 0, currency: null };
+      var match = text.match(/(?:US\$|\$|€|£|¥)\s?(\d[\d.,]*)/);
+      if (match && /shipping/i.test(text)) return { value: parsePriceNumber(match[1]), currency: null };
+    }
+    return null;
+  }
+
   function collectAliExpress() {
     var captured = getCapturedAliExpressData();
     var raw = captured || findEmbeddedJson(['runParams', '_d_c_', '__INIT_DATA__', '__AER_DATA__']);
@@ -2645,7 +2698,7 @@
     updateDebugAttribute();
     var match = String(location.pathname).match(/\/(?:item|i)\/(\d+)/);
     var handle = match ? match[1] : currentPageId();
-    return Promise.resolve(normalize({
+    var record = normalize({
       title: name,
       type: null,
       vendor: null,
@@ -2654,7 +2707,13 @@
       images: domImages,
       options: propOptions,
       variants: variants
-    }, handle, currency));
+    }, handle, currency);
+    var shipping = aliexpressShipping(data, currency) || aliexpressShipping(raw, currency) || aliexpressDomShipping();
+    if (shipping && shipping.value != null && !isNaN(Number(shipping.value))) {
+      record.shipping = Math.round(Number(shipping.value) * 100) / 100;
+      record.shippingCurrency = shipping.currency || currency || null;
+    }
+    return Promise.resolve(record);
   }
 
   function aliexpressSelectedPick() {
@@ -2766,6 +2825,20 @@
     return colors.join('/') || null;
   }
 
+  function itemShipping(record) {
+    if (!record || record.shipping == null) return null;
+    var value = Number(record.shipping);
+    return isNaN(value) ? null : value;
+  }
+
+  function shippingLabel(record) {
+    var value = itemShipping(record);
+    if (value == null) return null;
+    if (value <= 0) return 'free';
+    var currency = record.shippingCurrency || record.currency || '';
+    return (currency ? currency + ' ' : '') + value.toFixed(2);
+  }
+
   function makeSetRow(p, data) {
     var priceRange = variantPriceRange(p);
     return {
@@ -2788,6 +2861,8 @@
       available: !!data.available,
       complete: !!data.complete,
       missing: data.missing || [],
+      shipping: itemShipping(p),
+      shippingCurrency: p.shippingCurrency || null,
       picks: p.picks || [],
       activePick: p.activePick || null
     };
@@ -3186,9 +3261,15 @@
     link.rel = 'noopener noreferrer';
     link.textContent = row.name;
     link.style.cssText = 'color:#c94f86;font-weight:600;text-decoration:none;';
+    var shippingValue = itemShipping(row);
+    var grandTotal = Number(row.total) + (shippingValue != null ? shippingValue : 0);
     var price = document.createElement('span');
-    price.textContent = (row.currency ? row.currency + ' ' : '') + row.total.toFixed(2);
+    price.textContent = (row.currency ? row.currency + ' ' : '') + grandTotal.toFixed(2);
     price.style.cssText = 'font-weight:700;white-space:nowrap;';
+    if (shippingValue != null) {
+      price.title = 'Items ' + (row.currency ? row.currency + ' ' : '') + Number(row.total).toFixed(2) +
+        ' + shipping ' + shippingLabel(row);
+    }
     title.appendChild(link);
     if (isLiked(row)) {
       var badge = document.createElement('span');
@@ -3203,6 +3284,8 @@
     else if (row.color) metaBits.push('Color: ' + row.color);
     if (row.colorCount > 1) metaBits.push(row.colorCount + ' colors');
     metaBits.push(row.available ? 'in stock' : 'out of stock');
+    var shippingText = shippingLabel(row);
+    if (shippingText != null) metaBits.push(shippingText === 'free' ? 'free shipping' : 'shipping ' + shippingText);
     if (isMarkedUnavailable(row)) metaBits.push('marked unavailable');
     if (row.priceMin != null && row.priceMax > row.priceMin) {
       metaBits.push('range ' + (row.currency ? row.currency + ' ' : '') +
@@ -3811,13 +3894,23 @@
     }
   }
 
-  function sideTotal(side) {
+  function sideItemsTotal(side) {
     if (!side) return 0;
     var total = 0;
     for (var name in side.include) {
       if (!hasOwn(side.include, name) || !side.include[name]) continue;
       var pick = side.picks[name];
       if (pick) total += Number(pick.price) || 0;
+    }
+    return Math.round(total * 100) / 100;
+  }
+
+  function sideTotal(side) {
+    if (!side) return 0;
+    var total = sideItemsTotal(side);
+    if (side.record) {
+      var shipping = itemShipping(side.record);
+      if (shipping != null) total += shipping;
     }
     return Math.round(total * 100) / 100;
   }
@@ -4426,6 +4519,13 @@
         : 'Price: ' + currencyPrefix + range.min.toFixed(2);
       col.appendChild(priceLine);
     }
+    var compareShipping = shippingLabel(record);
+    if (compareShipping != null) {
+      var shippingLine = document.createElement('div');
+      shippingLine.style.cssText = 'color:#666;font-size:11px;';
+      shippingLine.textContent = 'Shipping: ' + (compareShipping === 'free' ? 'Free' : compareShipping);
+      col.appendChild(shippingLine);
+    }
     var historyCount = Array.isArray(record.history) ? record.history.length : 0;
     if (historyCount > 0) {
       var historyLine = document.createElement('div');
@@ -4531,6 +4631,10 @@
       'border-radius:6px;font-weight:700;text-align:right;';
     subtotal.textContent = 'Item ' + label + ' total: ' + (record.currency ? record.currency + ' ' : '') +
       sideTotal(side).toFixed(2);
+    if (itemShipping(record) != null) {
+      subtotal.title = 'Items ' + (record.currency ? record.currency + ' ' : '') + sideItemsTotal(side).toFixed(2) +
+        ' + shipping ' + shippingLabel(record);
+    }
     col.appendChild(subtotal);
     return col;
   }
@@ -5251,6 +5355,10 @@
       getCapturedAliExpressData: getCapturedAliExpressData,
       getCapturedAliExpressImages: getCapturedAliExpressImages,
       aliexpressDomImages: aliexpressDomImages,
+      aliexpressShipping: aliexpressShipping,
+      aliexpressDomShipping: aliexpressDomShipping,
+      itemShipping: itemShipping,
+      shippingLabel: shippingLabel,
       amazonAsin: amazonAsin,
       amazonImageUrl: amazonImageUrl,
       amazonImages: amazonImages,
