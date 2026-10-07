@@ -3,7 +3,7 @@
 // @namespace    shoplita
 // @updateURL    https://github.com/PipettingBeaver/Shoplita/raw/refs/heads/main/Shoplita.user.js
 // @downloadURL  https://github.com/PipettingBeaver/Shoplita/raw/refs/heads/main/Shoplita.user.js
-// @version      2.17.0
+// @version      2.18.0
 // @description  Saves prices and pieces from lolita shops (42Lolita, Devilinspired, My-Lolita-Dress, AliExpress, Amazon and other pages) into one wishlist. Keeps dated snapshots, computes coordinated set totals, ranks favourites, marks availability, organizes items into named tags and saves mix-and-match outfits, exports/imports JSON, TSV, Excel-ready CSV and Shoplita share files, and compares items, sets and outfits with searchable pickers, images and live totals in a minimizable panel.
 // @author       tan
 // @match        https://42lolita.com/*
@@ -711,6 +711,16 @@
     return stamp;
   }
 
+  function unlikeItem(record) {
+    var key = recordItemKey(record);
+    if (!key) return false;
+    var map = loadPriority();
+    if (map[key] === undefined) return false;
+    delete map[key];
+    savePriority(map);
+    return true;
+  }
+
   function isLiked(record) {
     return priorityScore(record) > 0;
   }
@@ -813,6 +823,21 @@
     collection.items.push(itemKey);
     saveCollections(list);
     return true;
+  }
+
+  function removeCollectionItem(id, itemKey) {
+    if (!id || !itemKey) return false;
+    var list = loadCollections();
+    for (var i = 0; i < list.length; i++) {
+      if (!list[i] || list[i].id !== id) continue;
+      if (!Array.isArray(list[i].items)) return false;
+      var index = list[i].items.indexOf(itemKey);
+      if (index < 0) return false;
+      list[i].items.splice(index, 1);
+      saveCollections(list);
+      return true;
+    }
+    return false;
   }
 
   function getDefaultSetId() {
@@ -1384,6 +1409,16 @@
   function promptImportTags(itemKeys) {
     var count = (itemKeys || []).length;
     return promptTagItems(itemKeys, 'Tag imported items', count + ' imported listing(s). Optionally tag them:', null);
+  }
+
+  function clearAllSavedInfo() {
+    saveAll([]);
+    savePriority({});
+    saveUnavailable({});
+    compareState.a = null;
+    compareState.b = null;
+    persistCompareState();
+    if (refreshStatus) refreshStatus();
   }
 
   function pickImportFile(onDone) {
@@ -3242,13 +3277,20 @@
     });
     var like = document.createElement('button');
     like.type = 'button';
-    like.textContent = 'I like this!';
+    like.textContent = isLiked(row) ? 'Unlike' : 'I like this!';
     like.style.cssText = 'cursor:pointer;font-size:11px;padding:2px 8px;border:1px solid #c94f86;background:#fff;color:#c94f86;border-radius:6px;margin-right:6px;font-weight:600;';
     like.addEventListener('click', function () {
       animate(like, 'shoplita-anim-like');
-      likeItem(row);
-      if (getSortBy() !== 'priority') setSortBy('priority');
-      toast('Liked! Moved to top');
+      if (isLiked(row)) {
+        unlikeItem(row);
+        like.textContent = 'I like this!';
+        toast('Removed from Priority');
+      } else {
+        likeItem(row);
+        like.textContent = 'Unlike';
+        if (getSortBy() !== 'priority') setSortBy('priority');
+        toast('Liked! Moved to top');
+      }
       setTimeout(refreshStatus, 460);
     });
     var compare = document.createElement('button');
@@ -4321,24 +4363,44 @@
       sourceLine.textContent = 'Listing from ' + source;
       sourceRow.appendChild(sourceLine);
 
-      var memberships = collectionsForItem(recordItemKey(record));
+      var recordKey = recordItemKey(record);
+      var memberships = collectionsForItem(recordKey);
       var tagNames = [];
       for (var tm = 0; tm < memberships.length; tm++) tagNames.push(memberships[tm].name);
       var bubble = document.createElement('span');
       bubble.setAttribute('aria-label', tagNames.length ? 'Tags: ' + tagNames.join(', ') : 'No tags');
-      if (tagNames.length) bubble.title = tagNames.join(', ');
-      bubble.style.cssText = 'display:inline-flex;align-items:center;gap:5px;min-width:0;max-width:180px;' +
+      bubble.style.cssText = 'display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;min-width:0;max-width:220px;' +
         'background:#f3e6f0;color:#8a3f68;border:1px solid #e2c3d8;border-radius:10px;padding:1px 8px;font-size:11px;';
       var dot = document.createElement('span');
       dot.style.cssText = 'width:6px;height:6px;border-radius:50%;background:#c94f86;flex:none;';
       bubble.appendChild(dot);
-      var bubbleText = document.createElement('span');
-      var shown = tagNames.slice(0, 3);
-      bubbleText.textContent = tagNames.length
-        ? shown.join(', ') + (tagNames.length > shown.length ? ' +' + (tagNames.length - shown.length) : '')
-        : 'No tags';
-      bubbleText.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-      bubble.appendChild(bubbleText);
+      if (!memberships.length) {
+        var noTags = document.createElement('span');
+        noTags.textContent = 'No tags';
+        noTags.style.cssText = 'color:#a8758f;';
+        bubble.appendChild(noTags);
+      } else {
+        for (var tmi = 0; tmi < memberships.length; tmi++) {
+          (function (membership) {
+            var tagChip = document.createElement('span');
+            tagChip.style.cssText = 'display:inline-flex;align-items:center;';
+            tagChip.appendChild(document.createTextNode(membership.name));
+            var tagX = document.createElement('button');
+            tagX.type = 'button';
+            tagX.className = 'shoplita-focus';
+            tagX.textContent = '\u00d7';
+            tagX.setAttribute('aria-label', 'Remove tag ' + membership.name);
+            tagX.style.cssText = 'border:none;background:none;color:#a8758f;cursor:pointer;font-size:11px;line-height:1;padding:0 0 0 1px;';
+            tagX.addEventListener('click', function (event) {
+              if (event && event.stopPropagation) event.stopPropagation();
+              removeCollectionItem(membership.id, recordKey);
+              renderCompare();
+            });
+            tagChip.appendChild(tagX);
+            bubble.appendChild(tagChip);
+          })(memberships[tmi]);
+        }
+      }
       sourceRow.appendChild(bubble);
 
       var addTag = document.createElement('button');
@@ -4376,13 +4438,20 @@
     likeRow.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
     var like = document.createElement('button');
     like.type = 'button';
-    like.textContent = 'I like this!';
+    like.textContent = isLiked(record) ? 'Unlike' : 'I like this!';
     like.style.cssText = 'cursor:pointer;font-size:12px;padding:4px 10px;border:1px solid #c94f86;background:#fff;color:#c94f86;border-radius:12px;font-weight:600;';
     like.addEventListener('click', function () {
       animate(like, 'shoplita-anim-like');
-      likeItem(record);
+      if (isLiked(record)) {
+        unlikeItem(record);
+        like.textContent = 'I like this!';
+        toast('Removed from Priority');
+      } else {
+        likeItem(record);
+        like.textContent = 'Unlike';
+        toast('Liked!');
+      }
       scoreLabel.textContent = isLiked(record) ? 'Liked' : '';
-      toast('Liked!');
     });
     var marked = isMarkedUnavailable(record);
     var mark = document.createElement('button');
@@ -4411,12 +4480,24 @@
       setCompareSide(label, candidate);
       renderCompare();
     });
+    var remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = 'Remove';
+    remove.style.cssText = 'cursor:pointer;font-size:12px;padding:4px 10px;border:1px solid #cc2b2b;background:#fff;color:#cc2b2b;border-radius:12px;';
+    remove.addEventListener('click', function () {
+      if (!confirm('Remove "' + record.name + '" from saved items?')) return;
+      removeItemGroup(recordItemKey(record));
+      setCompareSide(label, null);
+      if (refreshStatus) refreshStatus();
+      renderCompare();
+    });
     var scoreLabel = document.createElement('span');
     scoreLabel.textContent = isLiked(record) ? 'Liked' : '';
     scoreLabel.style.cssText = 'color:#666;font-size:11px;';
     likeRow.appendChild(like);
     likeRow.appendChild(mark);
     likeRow.appendChild(viewNext);
+    likeRow.appendChild(remove);
     likeRow.appendChild(scoreLabel);
     col.appendChild(likeRow);
 
@@ -4731,6 +4812,7 @@
     var priceHistoryCsvBtn = makeButton('Download price history (CSV)', false);
     var shareBtn = makeButton('Export for userscript', false);
     var importBtn = makeButton('Import data', false);
+    var clearBtn = makeButton('Clear saved info', false);
     var savedBtn = makeButton('Saved items', false, true);
     var compareBtn = makeButton('Compare', false, true);
     var moreBtn = makeButton('More\u2026', false, true);
@@ -4823,6 +4905,7 @@
     var importRow = document.createElement('div');
     importRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
     importRow.appendChild(importBtn);
+    importRow.appendChild(clearBtn);
 
     var exportLabel = document.createElement('div');
     exportLabel.textContent = 'Export';
@@ -5008,6 +5091,12 @@
     importBtn.addEventListener('click', function () {
       importData();
     });
+
+    clearBtn.addEventListener('click', function () {
+      if (!confirm('Delete all saved Shoplita product info, priority scores and availability marks?')) return;
+      clearAllSavedInfo();
+      toast('Cleared saved info');
+    });
   }
 
   function whenBodyReady(fn) {
@@ -5087,13 +5176,7 @@
     });
     GM_registerMenuCommand('Clear saved info', function () {
       if (!confirm('Delete all saved Shoplita product info, priority scores and availability marks?')) return;
-      saveAll([]);
-      savePriority({});
-      saveUnavailable({});
-      compareState.a = null;
-      compareState.b = null;
-      persistCompareState();
-      if (refreshStatus) refreshStatus();
+      clearAllSavedInfo();
       toast('Cleared saved info');
     });
   }
@@ -5134,6 +5217,7 @@
       priorityScore: priorityScore,
       isLiked: isLiked,
       likeItem: likeItem,
+      unlikeItem: unlikeItem,
       variantPriceRange: variantPriceRange,
       compareRecords: compareRecords,
       loadUnavailable: loadUnavailable,
@@ -5149,6 +5233,7 @@
       getSortBy: getSortBy,
       setSortBy: setSortBy,
       toggleCollectionItem: toggleCollectionItem,
+      removeCollectionItem: removeCollectionItem,
       collectionsForItem: collectionsForItem,
       collectionRecord: collectionRecord,
       loadOutfits: loadOutfits,
@@ -5195,6 +5280,7 @@
       loadUi: loadUi,
       saveUi: saveUi,
       removeItemGroup: removeItemGroup,
+      clearAllSavedInfo: clearAllSavedInfo,
       mergeImport: mergeImport,
       tagImportedItems: tagImportedItems,
       promptImportTags: promptImportTags,
