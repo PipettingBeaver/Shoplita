@@ -3,7 +3,7 @@
 // @namespace    shoplita
 // @updateURL    http://127.0.0.1:8791/Shoplita.dev.user.js
 // @downloadURL  http://127.0.0.1:8791/Shoplita.dev.user.js
-// @version      2.14.0
+// @version      2.14.1
 // @description  Saves prices and pieces from lolita shops (42Lolita, Devilinspired, My-Lolita-Dress, AliExpress, Amazon and other pages) into one wishlist. Keeps dated snapshots, computes coordinated set totals, ranks favourites, marks availability, organizes items into named sets and saves mix-and-match outfits, exports/imports JSON, TSV, Excel-ready CSV and Shoplita share files, and compares items, sets and outfits with searchable pickers, images and live totals in a minimizable panel.
 // @author       tan
 // @match        https://42lolita.com/*
@@ -2874,7 +2874,8 @@
     like.addEventListener('click', function () {
       animate(like, 'shoplita-anim-like');
       likeItem(row);
-      toast('Liked!');
+      if (getSortBy() !== 'priority') setSortBy('priority');
+      toast('Liked! Moved to top');
       setTimeout(refreshStatus, 460);
     });
     var compare = document.createElement('button');

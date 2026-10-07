@@ -53,5 +53,6 @@ node /tmp/opencode/smoke42.js   # UI/storage/compare/collections/outfit smoke te
 - Compare pickers use the custom `makeSearchableSelect` combobox (search + keyboard nav, one shared document click listener) — do not regress them to native `<select>`.
 - `variantTypeName` strips color words from bundle labels, so per-color values like "Gray Blue Set" / "Dark Red Set" collapse into one Compare type ("Set") with colors as options. Records store `image` plus an `images` candidate array; Compare falls back through candidates on load error.
 - `ui.v1` also stores `addToSet`, the default target set new saves/likes join (`Saved to "<set>"!`); deleting that set clears it.
+- Liking from the Saved-items panel switches the list to Priority sort (persisted in `ui.sortBy`) so the liked row moves to the top; the "Sort by" toggle still lets users return to Recently added.
 - Preserve aria attributes (`aria-expanded`/`aria-pressed`/`aria-live`, labels) and the `prefers-reduced-motion` handling.
 - `@run-at document-start`: never touch `document.body` before `whenBodyReady`. The panel is bottom-right, minimizable, and must stay inside the viewport (max-height/width + wrapping).
