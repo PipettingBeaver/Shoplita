@@ -3,7 +3,7 @@
 // @namespace    shoplita
 // @updateURL    https://github.com/PipettingBeaver/Shoplita/raw/refs/heads/main/Shoplita.user.js
 // @downloadURL  https://github.com/PipettingBeaver/Shoplita/raw/refs/heads/main/Shoplita.user.js
-// @version      2.19.0
+// @version      2.20.0
 // @description  Saves prices and pieces from lolita shops (42Lolita, Devilinspired, My-Lolita-Dress, AliExpress, Amazon and other pages) into one wishlist. Keeps dated snapshots, computes coordinated set totals, ranks favourites, marks availability, organizes items into named tags and saves mix-and-match outfits, exports/imports JSON, TSV, Excel-ready CSV and Shoplita share files, and compares items, sets and outfits with searchable pickers, images and live totals in a minimizable panel.
 // @author       tan
 // @match        https://42lolita.com/*
@@ -1122,6 +1122,45 @@
     }
     if (collectionsChanged) saveCollections(collections);
     return all.length - kept.length;
+  }
+
+  function removePick(itemKey, pickId) {
+    if (!itemKey || !pickId) return false;
+    var all = loadAll();
+    for (var i = 0; i < all.length; i++) {
+      if (recordItemKey(all[i]) !== itemKey) continue;
+      var picks = Array.isArray(all[i].picks) ? all[i].picks : [];
+      var kept = [];
+      var removed = false;
+      for (var j = 0; j < picks.length; j++) {
+        if (picks[j] && picks[j].id === pickId) { removed = true; continue; }
+        kept.push(picks[j]);
+      }
+      if (!removed) return false;
+      all[i].picks = kept;
+      if (all[i].activePick === pickId) all[i].activePick = kept.length ? kept[kept.length - 1].id : null;
+      saveAll(all);
+      return true;
+    }
+    return false;
+  }
+
+  function setActivePick(itemKey, pickId) {
+    if (!itemKey || !pickId) return false;
+    var all = loadAll();
+    for (var i = 0; i < all.length; i++) {
+      if (recordItemKey(all[i]) !== itemKey) continue;
+      var picks = Array.isArray(all[i].picks) ? all[i].picks : [];
+      for (var j = 0; j < picks.length; j++) {
+        if (picks[j] && picks[j].id === pickId) {
+          all[i].activePick = pickId;
+          saveAll(all);
+          return true;
+        }
+      }
+      return false;
+    }
+    return false;
   }
 
   function sanitizeRecord(raw) {
@@ -2864,7 +2903,8 @@
       shipping: itemShipping(p),
       shippingCurrency: p.shippingCurrency || null,
       picks: p.picks || [],
-      activePick: p.activePick || null
+      activePick: p.activePick || null,
+      variants: p.variants || []
     };
   }
 
@@ -3261,13 +3301,17 @@
     link.rel = 'noopener noreferrer';
     link.textContent = row.name;
     link.style.cssText = 'color:#c94f86;font-weight:600;text-decoration:none;';
+    var pickList = (row && row.picks) || [];
+    var activePickValue = pickList.length ? activePick(row) : null;
+    var activeVariant = activePickValue ? findPickVariant({ variants: row.variants || [] }, activePickValue) : null;
+    var itemsTotal = activeVariant && activeVariant.price != null ? Number(activeVariant.price) : Number(row.total);
     var shippingValue = itemShipping(row);
-    var grandTotal = Number(row.total) + (shippingValue != null ? shippingValue : 0);
+    var grandTotal = itemsTotal + (shippingValue != null ? shippingValue : 0);
     var price = document.createElement('span');
     price.textContent = (row.currency ? row.currency + ' ' : '') + grandTotal.toFixed(2);
     price.style.cssText = 'font-weight:700;white-space:nowrap;';
     if (shippingValue != null) {
-      price.title = 'Items ' + (row.currency ? row.currency + ' ' : '') + Number(row.total).toFixed(2) +
+      price.title = 'Items ' + (row.currency ? row.currency + ' ' : '') + itemsTotal.toFixed(2) +
         ' + shipping ' + shippingLabel(row);
     }
     title.appendChild(link);
@@ -3280,9 +3324,10 @@
     title.appendChild(price);
 
     var metaBits = [];
-    if (row.type === 'bundle' && row.set) metaBits.push('Bundle: ' + row.set);
+    if (pickList.length) metaBits.push(pickList.length + ' saved variant' + (pickList.length > 1 ? 's' : ''));
+    else if (row.type === 'bundle' && row.set) metaBits.push('Bundle: ' + row.set);
     else if (row.color) metaBits.push('Color: ' + row.color);
-    if (row.colorCount > 1) metaBits.push(row.colorCount + ' colors');
+    if (!pickList.length && row.colorCount > 1) metaBits.push(row.colorCount + ' colors');
     metaBits.push(row.available ? 'in stock' : 'out of stock');
     var shippingText = shippingLabel(row);
     if (shippingText != null) metaBits.push(shippingText === 'free' ? 'free shipping' : 'shipping ' + shippingText);
@@ -3385,10 +3430,13 @@
     });
     var remove = document.createElement('button');
     remove.type = 'button';
-    remove.textContent = 'Remove';
+    remove.textContent = pickList.length ? 'Remove listing' : 'Remove';
     remove.style.cssText = 'cursor:pointer;font-size:11px;padding:2px 8px;border:1px solid #cc2b2b;background:#fff;color:#cc2b2b;border-radius:6px;';
     remove.addEventListener('click', function () {
-      if (!confirm('Remove "' + row.name + '" from saved items?')) return;
+      var extra = pickList.length
+        ? ' (all ' + pickList.length + ' variant' + (pickList.length > 1 ? 's' : '') + ')'
+        : '';
+      if (!confirm('Remove "' + row.name + '"' + extra + ' from saved items?')) return;
       removeItemGroup(recordItemKey(row));
       refreshStatus();
     });
@@ -3399,31 +3447,64 @@
 
     wrap.appendChild(title);
     wrap.appendChild(meta);
-    var picks = (row && row.picks) || [];
-    if (picks.length) {
-      var picksRow = document.createElement('div');
-      picksRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin-top:4px;';
-      var picksLabel = document.createElement('span');
-      picksLabel.textContent = picks.length > 1 ? 'Picks:' : 'Pick:';
-      picksLabel.style.cssText = 'color:#666;font-size:11px;';
-      picksRow.appendChild(picksLabel);
-      var activePickId = (activePick(row) || {}).id || null;
-      for (var pi = 0; pi < picks.length; pi++) {
-        var pick = picks[pi];
-        var active = pick.id === activePickId;
-        var chip = document.createElement('span');
-        chip.textContent = pickLabel(pick);
-        chip.title = active ? 'Active pick' : 'Pick';
-        chip.style.cssText = 'font-size:11px;padding:2px 8px;border-radius:10px;border:1px solid ' +
-          (active ? '#c94f86' : '#ccc') + ';background:' + (active ? '#e6659b' : '#fff') +
-          ';color:' + (active ? '#fff' : '#555') + ';';
-        picksRow.appendChild(chip);
-      }
-      wrap.appendChild(picksRow);
-    }
     if (names.length) wrap.appendChild(pieces);
     wrap.appendChild(actions);
     return wrap;
+  }
+
+  function savedPickRow(row, pick) {
+    var el = document.createElement('div');
+    el.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 10px 5px 22px;border-bottom:1px solid #f2f2f2;font-size:11px;';
+    var isActive = pick.id === ((activePick(row) || {}).id);
+    var label = document.createElement('button');
+    label.type = 'button';
+    label.className = 'shoplita-focus';
+    label.textContent = pickLabel(pick);
+    label.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+    label.title = isActive ? 'Default variant' : 'Set as default variant';
+    label.style.cssText = 'cursor:pointer;flex:1;min-width:0;text-align:left;overflow:hidden;text-overflow:ellipsis;' +
+      'white-space:nowrap;border:none;background:none;padding:0;font:inherit;font-weight:600;color:' +
+      (isActive ? '#c94f86' : '#444') + ';';
+    label.addEventListener('click', function () {
+      if (setActivePick(recordItemKey(row), pick.id)) renderSavedPanel();
+    });
+    el.appendChild(label);
+
+    var variant = findPickVariant({ variants: row.variants || [] }, pick);
+    var variantPrice = variant && variant.price != null ? Number(variant.price) : Number(row.total);
+    var priceEl = document.createElement('span');
+    priceEl.textContent = (row.currency ? row.currency + ' ' : '') + variantPrice.toFixed(2);
+    priceEl.style.cssText = 'font-weight:600;white-space:nowrap;';
+    el.appendChild(priceEl);
+
+    var available = variant ? !!variant.available : !!row.available;
+    var stockEl = document.createElement('span');
+    stockEl.textContent = available ? 'in stock' : 'out of stock';
+    stockEl.style.cssText = 'color:#888;white-space:nowrap;';
+    el.appendChild(stockEl);
+
+    var remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'shoplita-focus';
+    remove.textContent = '\u00d7';
+    remove.setAttribute('aria-label', 'Remove variant ' + pickLabel(pick));
+    remove.title = 'Remove this variant (listing stays saved)';
+    remove.style.cssText = 'cursor:pointer;border:none;background:none;color:#cc2b2b;font-size:14px;line-height:1;';
+    remove.addEventListener('click', function () {
+      if (!confirm('Remove the "' + pickLabel(pick) + '" variant? The listing stays saved.')) return;
+      removePick(recordItemKey(row), pick.id);
+      refreshStatus();
+    });
+    el.appendChild(remove);
+    return el;
+  }
+
+  function savedRowGroup(row) {
+    var group = document.createElement('div');
+    group.appendChild(savedRowEl(row));
+    var picks = (row && row.picks) || [];
+    for (var i = 0; i < picks.length; i++) group.appendChild(savedPickRow(row, picks[i]));
+    return group;
   }
 
   function collectionChipStyle(active) {
@@ -3656,7 +3737,7 @@
       head.textContent = title;
       head.style.cssText = 'padding:6px 10px;background:#f6f6f6;font-weight:700;color:#555;text-transform:uppercase;font-size:10px;letter-spacing:.5px;';
       savedPanelBody.appendChild(head);
-      for (var s = 0; s < sectionRows.length; s++) savedPanelBody.appendChild(savedRowEl(sectionRows[s]));
+      for (var s = 0; s < sectionRows.length; s++) savedPanelBody.appendChild(savedRowGroup(sectionRows[s]));
     }
     if (!filtered.length) {
       var empty = document.createElement('div');
@@ -3667,7 +3748,7 @@
       if (priorityRows.length) addSection('Priority', priorityRows);
       if (otherRows.length) addSection(priorityRows.length ? 'All items' : 'Items', otherRows);
     } else {
-      for (var r2 = 0; r2 < filtered.length; r2++) savedPanelBody.appendChild(savedRowEl(filtered[r2]));
+      for (var r2 = 0; r2 < filtered.length; r2++) savedPanelBody.appendChild(savedRowGroup(filtered[r2]));
     }
     if (savedPanelStatus) {
       var keys = {};
@@ -4938,6 +5019,14 @@
       if (latest && String(latest.savedAt || '').slice(0, 10) === today) {
         saveBtn.textContent = 'Saved';
         saveBtn.title = 'Click to refresh this saved listing';
+      } else if (latest && Array.isArray(latest.picks) && latest.picks.length) {
+        var pageAdapter = adapterFor(location.href);
+        var pagePickSelected = null;
+        try { pagePickSelected = pageAdapter && pageAdapter.pick ? pageAdapter.pick() : null; } catch (e) {}
+        if (pagePickSelected) {
+          saveBtn.textContent = 'Save variant';
+          saveBtn.title = 'Add the selected variant to this saved listing';
+        }
       }
       if (pageHandle && priorityScore({ handle: pageHandle, source: currentSource() }) > 0) {
         likePageBtn.textContent = 'Liked';
@@ -5073,12 +5162,15 @@
       saveBtn.disabled = true;
       saveBtn.textContent = 'Saving...';
       collectProduct().then(function (record) {
-        upsertRecord(record);
+        var savedIndex = upsertRecord(record);
+        var stored = loadAll()[savedIndex];
+        var variantCount = stored && Array.isArray(stored.picks) ? stored.picks.length : 0;
         var target = findCollection(getDefaultSetId());
         if (target) addCollectionItem(target.id, recordItemKey(record));
         refreshStatus();
         saveBtn.textContent = 'Saved';
-        toast(target ? 'Saved to "' + target.name + '"!' : 'Saved!');
+        var baseMessage = target ? 'Saved to "' + target.name + '"!' : 'Saved!';
+        toast(variantCount > 1 ? baseMessage + ' ' + variantCount + ' variants' : baseMessage);
       }).catch(function (e) {
         saveBtn.disabled = false;
         saveBtn.textContent = 'Save listing';
@@ -5388,6 +5480,8 @@
       loadUi: loadUi,
       saveUi: saveUi,
       removeItemGroup: removeItemGroup,
+      removePick: removePick,
+      setActivePick: setActivePick,
       clearAllSavedInfo: clearAllSavedInfo,
       mergeImport: mergeImport,
       tagImportedItems: tagImportedItems,
