@@ -1,16 +1,17 @@
 # Shoplita — agent notes
 
-Single-file userscript that saves prices/pieces from lolita shops and compares them. No build system, no package.json, not a git repository.
+Single-file userscript that saves prices/pieces from lolita shops and compares them. No build system and no package.json (just `tools/*.sh`), but it *is* a git repo (`PipettingBeaver/Shoplita`, branch `main`).
 
 ## Files
 - `Shoplita.txt` is the canonical source. Edit only this.
 - `Shoplita.user.js` (clean, for sharing) and `Shoplita.dev.user.js` (localhost update URLs) are generated; never edit them by hand. `tools/sync.sh` rebuilds both, `tools/dev.sh` also serves them.
+- Both generated copies are tracked in git, and `Shoplita.user.js` is what users install from `raw/refs/heads/main/Shoplita.user.js`. A commit that changes only `Shoplita.txt` ships a stale installable — regenerate and commit all three.
 - Keep the code ES5 (`var` + function declarations; no `let`/`const`, arrows, template literals, optional chaining) and verify with acorn.
 
 ## Dev loop
 - `bash tools/dev.sh` watches `Shoplita.txt` and serves the folder at `http://127.0.0.1:8791` (port 8765 is often taken on this machine).
 - Install `http://127.0.0.1:8791/Shoplita.dev.user.js` once in Tampermonkey; it shares `@name`/`@namespace` with the clean build, so updates replace in place. After an edit, use Tampermonkey's "Check for updates" (or reopen the URL).
-- `bash tools/sync.sh` alone just regenerates the two `.user.js` copies.
+- `bash tools/sync.sh` alone just regenerates the two `.user.js` copies (no server). `bash tools/serve.sh` serves without watching. Both `dev.sh`/`serve.sh` take a port as `$1`; `sync.sh` reads `PORT`.
 
 ## Verify changes
 There are no in-repo tests. Harnesses live in `/tmp/opencode` and may not survive a reboot; recreate them if missing.
@@ -18,11 +19,11 @@ There are no in-repo tests. Harnesses live in `/tmp/opencode` and may not surviv
 cp Shoplita.txt /tmp/opencode/lolita.js
 node --check /tmp/opencode/lolita.js
 npx --yes acorn@8 --ecma5 /tmp/opencode/lolita.js
-node /tmp/opencode/test42.js    # 250-product logic suite (needs /tmp/opencode/42products.json fixture)
-node /tmp/opencode/smoke42.js   # UI/storage/compare/collections/outfit smoke test
+node /tmp/opencode/ui_test.js        # panel/compare/duel smoke test (needs `linkedom` in /tmp/opencode)
+node /tmp/opencode/pickrows_test.js  # saved-variant rows + removePick test
 ```
 - The `module.exports` block at the end of the script is a Node test hook; keep it and export new internals worth testing.
-- Harnesses stub `document`, `location`, `GM_*`, `localStorage`, and `URL`, then `require` the copied file.
+- Harnesses use `linkedom` to fake `document`, stub `location`, `GM_*`, `localStorage`, and `URL`, then `require` the copied file.
 
 ## Data contract (breaking this loses user data)
 - Storage is `GM_getValue`/`GM_setValue` with a `localStorage` fallback; keys are prefixed `shoplita.`.
@@ -31,10 +32,11 @@ node /tmp/opencode/smoke42.js   # UI/storage/compare/collections/outfit smoke te
 - The Saved-items panel collapses rows to one per listing via `collapseListingRows` (best color row, `colorCount` meta); the row matching the record's active pick wins. Listings with `picks` render the listing row plus one row per saved variant (`savedRowGroup`/`savedPickRow`); a pick row's × calls `removePick` (that config only), while the listing row's "Remove listing" calls `removeItemGroup` (all configs + listing). Compare and CSV exports still use per-color rows (`buildSummaryRows`).
 - Saved selections ("picks") live on the record as `picks: [{id, variantId, piece, color, size, image, savedAt}]` + `activePick` (id). Adapters expose an optional `pick()` returning `{variantId}` or `{color,size}` or `{options:[{name,value}]}`; `collectProduct()` maps it through `makePick()` (matches a variant by id, option values, or color+size) and `upsertRecord` merges it via `mergePicks` (same `id` updates, else appends). Saving a page already saved with a new selection appends a variant (Save label "Save variant", toast counts them); `setActivePick` switches the default. `activePick`/`activePickColor` drive the listing row and `newCompareSide`'s default color. Records without `picks` behave as before; the share format stays v2.
 - `removeItemGroup` also strips the item key from every collection, so set counts stay accurate when listings are removed.
+- `record.category` is the user-facing "Type" (`Category: Dress` chip / "What is this?" on Saved rows) and drives Compare's picker filter via `categoriesCompatible`; it is independent of collections/tags. `inferCategory()` fills it from picks + variant piece names, then falls back to the product name/`type` through `categoryFromText()` (earliest garment keyword wins — this is what types AliExpress items whose variants are only colors/sizes). `normalizeSources()` re-infers uncategorized records on load, so both new and already-saved items get typed; manual choice via `setRecordCategory` (the category dialog) always wins.
 - `mergeImport` returns `items` (the `source|handle` keys it touched). After a successful import, `promptImportTags(items)` opens a dialog to tag them with any existing tags and/or a new tag name; it delegates to `promptTagItems(keys, heading, note, onDone)` (the same dialog Compare's "Add tag" uses) and `tagImportedItems(name, keys)` (creates-or-reuses the named collection, adds each key once). Idempotent on re-import.
 - Price history lives on the record as a compact `history` array (one `{savedAt, currency, variants:[{id,price,available}]}` per day, capped at 180). `upsertRecord`/`dedupeRecords` append via `pushHistory`/`mergeHistoryFrom`; `historyMatrix()` feeds the price-history TSV/CSV exports.
 - Share format is `{format:"shoplita", version:2, ...}`. Import must keep accepting v1 `42lolita-userscript`, bare arrays, single records, and must merge priority/unavailable/collections/outfits.
-- `priority` values are like timestamps (monotonic ms from `likeItem`), not counters; legacy numeric values are migrated in `normalizeSources`. `unlikeItem` deletes the key (Saved rows and Compare surface it as an "Unlike" toggle). `clearAllSavedInfo()` (Tampermonkey menu + panel "Clear saved info") wipes records/priority/unavailable/compare state but keeps collections/outfits. Compare ranking/filter state is persisted inside `shoplita.compare.v1` alongside the A/B keys.
+- `priority` values are like timestamps (monotonic ms from `likeItem`), not counters; legacy numeric values are migrated in `normalizeSources`. `unlikeItem` deletes the key (Saved rows and Compare surface it as an "Unlike" toggle). `clearAllSavedInfo()` (Tampermonkey menu + panel "Clear saved info") wipes records/priority/unavailable/compare state but keeps collections/outfits. Compare ranking/filter/mode state is persisted inside `shoplita.compare.v1` alongside the A/B keys.
 
 ## Prices
 - `normalize()` expects Shopify variant prices in **cents** and divides by 100; stored records, Compare, collections and outfits all work in **dollars**.
@@ -56,7 +58,12 @@ node /tmp/opencode/smoke42.js   # UI/storage/compare/collections/outfit smoke te
 - Compare pickers use the custom `makeSearchableSelect` combobox (search + keyboard nav, one shared document click listener) — do not regress them to native `<select>`.
 - Each Compare side shows a tag bubble (the item's tags, from `collectionsForItem`) and an "Add tag" button next to "Listing from <source>"; "Add tag" opens `promptTagItems([key], 'Add tag', record.name, renderCompare)`, each bubble tag has an × (`removeCollectionItem`), and the side's action row has "Unlike" and "Remove" (delete listing) buttons.
 - `variantTypeName` strips color words from bundle labels, so per-color values like "Gray Blue Set" / "Dark Red Set" collapse into one Compare type ("Set") with colors as options. Records store `image` plus an `images` candidate array; Compare falls back through candidates on load error.
+- Compare navigation: each side's action row has "View previous" and "View next", both thin wrappers over `stepAvailableRecord(key, otherKey, ±1)` (`nextAvailableRecord` stays exported as the +1 wrapper). Rendering a side also calls `preloadNeighborImages(record, otherKey)`, which warms the previous/next records in `compareOrder` through `warmRecordImage` (memoised per item key, one `fetchRecordImage` + `new Image()` prefetch each). Image swaps animate with `.shoplita-anim-image`, keyed **per side** in `comparedImageKeys[label]` (reset in `closeCompare`) so pressing View next on one side never replays the other side's image; both sides animating means that per-side keying was lost.
+- The Compare window has two modes toggled by a segmented control at the left of `headTop` (`Compare` / `Combine`, `aria-pressed`): `compareState.mode` (default `compare`, persisted via `persistCompareState`/`restoreCompareState`). `combine` keeps the old footer ("Combined total" + "Save outfit"); `compare` swaps it for a duel: `parts` breakdown plus `Prefer A`/`Prefer B`/`Tie`/`Skip` buttons. Dueling rewrites `shoplita.priority.v1` to encode the chosen order (`duelRankedList` → `applyDuelChoice` moves the winner directly above the loser → `writePriorityOrder` re-stamps `max(Date.now(), max+1) - i`), so priority values stay timestamps and the list is fully ordered after a pass. `suggestDuelPair` favours adjacent pairs (~70%) and avoids repeating the current pair; `Tie`/`Skip` advance without reordering. Note duelling only stamps pool participants, so filtered-out/unavailable liked items are demoted. The window carries `id="shoplita-compare-window"` for tests.
+- The Compare header is two rows: `headTop` (mode toggle + rank/filter/close) and `headPick` (the two `makeSearchableSelect` pickers). `headPick` must mirror the body columns exactly — `padding:0 14px 10px`, cells `flex:1 1 280px;min-width:0`, and a `flex:none;width:12px` empty spacer (`pickGap`, no "vs" label) between them — so each picker sits above its own image at the same offset as the column below it. The body uses `padding:12px 14px;gap:12px`, so the 12px spacer (not an extra gap) is what keeps the right cell aligned.
+- Compare side columns carry a locked height (`height:min(760px, calc(100vh - 230px))` + `overflow-y:auto`) so switching a side between a no-options item and a many-options item never moves the buttons or the window size. Keep that height constant — a "max of what's needed" grows on first use and still jumps. The `calc(100vh - 230px)` term is what keeps head + foot inside the window's `max-height:92vh`; raise the `min()` cap to make Compare taller, not the calc.
 - `ui.v1` also stores `addToSet`, the default target tag new saves/likes join (`Saved to "<tag>"!`); deleting that tag clears it. Collections are the storage concept but are surfaced in the UI as "Tags" (`set`, `Set…`, `Sets ----`, etc. strings were renamed) — keep user-facing wording as "tag".
 - Liking from the Saved-items panel switches the list to Priority sort (persisted in `ui.sortBy`) so the liked row moves to the top; the "Sort by" toggle still lets users return to Recently added.
-- Preserve aria attributes (`aria-expanded`/`aria-pressed`/`aria-live`, labels) and the `prefers-reduced-motion` handling.
-- `@run-at document-start`: never touch `document.body` before `whenBodyReady`. The panel is bottom-right, minimizable, and must stay inside the viewport (max-height/width + wrapping).
+- Preserve aria attributes (`aria-expanded`/`aria-pressed`/`aria-live`, labels) and the `prefers-reduced-motion` handling (`reducedMotion()` skips the open/close animation entirely).
+- `@run-at document-start`: never touch `document.body` before `whenBodyReady`. The panel must stay inside the viewport (max-height/width + wrapping).
+- The minimized `+` button is draggable (`ui.miniPos` in `ui.v1`, persisted on drag end, clamped by `clampMiniPos` to an 8px viewport margin); a drag sets `suppressMiniClick` so the trailing click doesn't expand. `anchorPanelToMini()` positions the open panel off that saved corner — it grows away from the nearest screen edge and is re-clamped on `resize` — so never hardcode `right/bottom` on the panel after `buildUi`. Opening/closing runs the staggered `.shoplita-anim-open`/`.shoplita-anim-close` row animations (`.shoplita-anim-mini` pops the `+` back in); `setMinimized(state, true)` is the instant path used on load.

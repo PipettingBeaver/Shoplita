@@ -3,7 +3,7 @@
 // @namespace    shoplita
 // @updateURL    https://github.com/PipettingBeaver/Shoplita/raw/refs/heads/main/Shoplita.user.js
 // @downloadURL  https://github.com/PipettingBeaver/Shoplita/raw/refs/heads/main/Shoplita.user.js
-// @version      2.20.0
+// @version      2.21.0
 // @description  Saves prices and pieces from lolita shops (42Lolita, Devilinspired, My-Lolita-Dress, AliExpress, Amazon and other pages) into one wishlist. Keeps dated snapshots, computes coordinated set totals, ranks favourites, marks availability, organizes items into named tags and saves mix-and-match outfits, exports/imports JSON, TSV, Excel-ready CSV and Shoplita share files, and compares items, sets and outfits with searchable pickers, images and live totals in a minimizable panel.
 // @author       tan
 // @match        https://42lolita.com/*
@@ -203,6 +203,119 @@
   var PIECE_RES = PIECE_KEYWORDS.map(function (pair) {
     return [new RegExp('\\b' + escapeRegExp(pair[0]) + '(?:s|es)?\\b'), pair[1]];
   });
+
+  var CATEGORIES = [
+    'Dress', 'Top', 'Bottom', 'Outerwear', 'Headwear', 'Legwear', 'Footwear',
+    'Armwear', 'Bag', 'Jewelry', 'Accessory', 'Set', 'Other'
+  ];
+
+  var CATEGORY_PIECE_MAP = {
+    'OP': 'Dress', 'JSK': 'Dress', 'Dress': 'Dress', 'Salopette': 'Dress',
+    'Blouse': 'Top', 'Shirt': 'Top', 'Top': 'Top', 'Corset': 'Top', 'Vest': 'Top',
+    'Camisole': 'Top', 'Undershirt': 'Top',
+    'Skirt': 'Bottom', 'Shorts': 'Bottom', 'Pants': 'Bottom', 'Bloomers': 'Bottom',
+    'Underskirt': 'Bottom', 'Overskirt': 'Bottom', 'Petticoat': 'Bottom',
+    'Jacket': 'Outerwear', 'Cardigan': 'Outerwear', 'Coat': 'Outerwear', 'Cape': 'Outerwear',
+    'Cloak': 'Outerwear', 'Bolero': 'Outerwear', 'Mantle': 'Outerwear',
+    'Headdress': 'Headwear', 'Headpiece': 'Headwear', 'Headband': 'Headwear', 'Bonnet': 'Headwear',
+    'Hat': 'Headwear', 'Beret': 'Headwear', 'Crown': 'Headwear', 'Veil': 'Headwear', 'Top Hat': 'Headwear',
+    'Socks': 'Legwear', 'Stockings': 'Legwear', 'Tights': 'Legwear', 'Pantyhose': 'Legwear',
+    'Boots': 'Footwear', 'Shoes': 'Footwear',
+    'Gloves': 'Armwear', 'Wrist Cuffs': 'Armwear', 'Cuffs': 'Armwear', 'Sleeves': 'Armwear',
+    'Bag': 'Bag',
+    'Necklace': 'Jewelry', 'Brooch': 'Jewelry', 'Badge': 'Jewelry', 'Choker': 'Jewelry',
+    'Ear Clips': 'Jewelry', 'Chains': 'Jewelry',
+    'Hair Clips': 'Accessory', 'Bow': 'Accessory', 'Tie': 'Accessory', 'Belt': 'Accessory',
+    'Sash': 'Accessory', 'Collar': 'Accessory', 'Waist Cincher': 'Accessory', 'Waistband': 'Accessory',
+    'Apron': 'Accessory', 'Parasol': 'Accessory', 'Streamers': 'Accessory', 'Train': 'Accessory',
+    'Wig': 'Accessory', 'KC': 'Accessory', 'Jabot': 'Accessory', 'Accessories': 'Accessory'
+  };
+
+  function isKnownCategory(name) {
+    return CATEGORIES.indexOf(name) >= 0;
+  }
+
+  function categoryForPiece(name) {
+    if (!name) return null;
+    var canonical = canonicalPiece(name) || String(name);
+    return CATEGORY_PIECE_MAP[canonical] || null;
+  }
+
+  function categoryFromText(text) {
+    var cleaned = cleanPieceSegment(text).toLowerCase();
+    if (!cleaned) return null;
+    var best = null;
+    var bestAt = -1;
+    for (var i = 0; i < PIECE_RES.length; i++) {
+      var match = cleaned.match(PIECE_RES[i][0]);
+      if (!match) continue;
+      var category = CATEGORY_PIECE_MAP[PIECE_RES[i][1]];
+      if (!category || category === 'Set' || category === 'Other') continue;
+      if (bestAt < 0 || match.index < bestAt) {
+        bestAt = match.index;
+        best = category;
+      }
+    }
+    return best;
+  }
+
+  function inferCategory(record) {
+    if (!record) return { category: null, confident: false };
+    var votes = {};
+    function vote(text) {
+      var category = categoryForPiece(text);
+      if (!category) return;
+      votes[category] = (votes[category] || 0) + 1;
+    }
+    var picks = Array.isArray(record.picks) ? record.picks : [];
+    for (var i = 0; i < picks.length; i++) {
+      if (picks[i] && picks[i].piece) vote(picks[i].piece);
+    }
+    if (record.pick && record.pick.piece) vote(record.pick.piece);
+    var bundle = false;
+    var variants = Array.isArray(record.variants) ? record.variants : [];
+    for (var v = 0; v < variants.length; v++) {
+      var parsed = variantPieces(variants[v]);
+      if (parsed.bundle) bundle = true;
+      for (var p = 0; p < parsed.pieces.length; p++) vote(parsed.pieces[p].name);
+      if (!parsed.pieces.length) vote(variantTypeName(variants[v]));
+    }
+    if (bundle) return { category: 'Set', confident: true };
+    var best = null;
+    var bestCount = 0;
+    for (var c = 0; c < CATEGORIES.length; c++) {
+      var category = CATEGORIES[c];
+      if (category === 'Set' || category === 'Other') continue;
+      var count = votes[category] || 0;
+      if (count > bestCount) { bestCount = count; best = category; }
+    }
+    if (!best && record) best = categoryFromText(record.name) || categoryFromText(record.type);
+    return { category: best, confident: !!best };
+  }
+
+  function recordCategory(record) {
+    if (!record) return null;
+    var category = record.category;
+    return category && isKnownCategory(category) ? category : null;
+  }
+
+  function autoCategoryEnabled() {
+    return loadUi().autoCategory !== false;
+  }
+
+  function setRecordCategory(itemKey, category) {
+    if (!itemKey) return false;
+    var all = loadAll();
+    for (var i = 0; i < all.length; i++) {
+      if (recordItemKey(all[i]) !== itemKey) continue;
+      if (category && isKnownCategory(category)) all[i].category = category;
+      else delete all[i].category;
+      saveAll(all);
+      return true;
+    }
+    return false;
+  }
+
 
   function hasOwn(obj, key) {
     return Object.prototype.hasOwnProperty.call(obj, key);
@@ -640,6 +753,7 @@
     var all = loadAll();
     var incomingPick = record.pick || null;
     var incomingId = incomingPick ? (incomingPick.id || pickIdentity(incomingPick)) : null;
+    var inferred = autoCategoryEnabled() && !recordCategory(record) ? (inferCategory(record).category || null) : null;
     for (var i = 0; i < all.length; i++) {
       if (recordsMatch(all[i], record)) {
         record.history = pushHistory(all[i].history, compactSnapshot(all[i]));
@@ -648,12 +762,17 @@
         if (!pickExists(record.picks, record.activePick)) {
           record.activePick = record.picks.length ? record.picks[record.picks.length - 1].id : null;
         }
+        if (!recordCategory(record)) {
+          if (recordCategory(all[i])) record.category = all[i].category;
+          else if (inferred) record.category = inferred;
+        }
         delete record.pick;
         all[i] = record;
         saveAll(all);
         return i;
       }
     }
+    if (!recordCategory(record) && inferred) record.category = inferred;
     record.picks = mergePicks(null, incomingPick);
     record.activePick = incomingId || (record.picks.length ? record.picks[0].id : null);
     delete record.pick;
@@ -697,15 +816,19 @@
     return Number(map[key]) || 0;
   }
 
-  function likeItem(record) {
-    var key = recordItemKey(record);
-    if (!key) return 0;
-    var map = loadPriority();
+  function nextPriorityStamp(map) {
     var max = 0;
     for (var k in map) {
       if (hasOwn(map, k) && Number(map[k]) > max) max = Number(map[k]);
     }
-    var stamp = Math.max(Date.now(), max + 1);
+    return Math.max(Date.now(), max + 1);
+  }
+
+  function likeItem(record) {
+    var key = recordItemKey(record);
+    if (!key) return 0;
+    var map = loadPriority();
+    var stamp = nextPriorityStamp(map);
     map[key] = stamp;
     savePriority(map);
     return stamp;
@@ -1001,11 +1124,19 @@
 
   function normalizeSources() {
     var changed = false;
+    var autoCategory = autoCategoryEnabled();
     var all = loadAll();
     for (var i = 0; i < all.length; i++) {
       if (!all[i].source) {
         all[i].source = '42lolita.com';
         changed = true;
+      }
+      if (autoCategory && !recordCategory(all[i])) {
+        var inferred = inferCategory(all[i]);
+        if (inferred.category) {
+          all[i].category = inferred.category;
+          changed = true;
+        }
       }
     }
     if (changed) saveAll(all);
@@ -1179,11 +1310,13 @@
       savedAt: raw.savedAt,
       shipping: raw.shipping,
       shippingCurrency: raw.shippingCurrency,
+      category: raw.category,
       variants: raw.variants
     }));
     if (!record.name) record.name = record.handle || 'Imported product';
     if (!record.savedAt) record.savedAt = new Date().toISOString();
     if (record.currency == null) record.currency = '';
+    if (!isKnownCategory(record.category)) delete record.category;
     var variants = [];
     for (var i = 0; i < record.variants.length; i++) {
       var v = record.variants[i];
@@ -1223,9 +1356,11 @@
     var result = { added: 0, updated: 0, skipped: 0, total: 0 };
     var importedKeys = [];
     var seenKeys = {};
+    var autoCategory = autoCategoryEnabled();
     for (var j = 0; j < incoming.length; j++) {
       var record = sanitizeRecord(incoming[j]);
       if (!record) { result.skipped++; continue; }
+      var inferred = autoCategory && !recordCategory(record) ? (inferCategory(record).category || null) : null;
       var itemKey = recordItemKey(record);
       if (itemKey && !seenKeys[itemKey]) { seenKeys[itemKey] = true; importedKeys.push(itemKey); }
       var keys = listingKeys(record);
@@ -1239,6 +1374,10 @@
       if (matchIndex >= 0) {
         var existing = all[matchIndex];
         if (String(record.savedAt || '') >= String(existing.savedAt || '')) {
+          if (!recordCategory(record)) {
+            if (recordCategory(existing)) record.category = existing.category;
+            else if (inferred) record.category = inferred;
+          }
           var mergedKeys = listingKeys(existing).concat(keys);
           all[matchIndex] = record;
           for (var rk = 0; rk < mergedKeys.length; rk++) index[mergedKeys[rk]] = matchIndex;
@@ -1247,6 +1386,7 @@
           result.skipped++;
         }
       } else {
+        if (!recordCategory(record) && inferred) record.category = inferred;
         all.push(record);
         indexRecord(record, all.length - 1);
         result.added++;
@@ -1337,7 +1477,22 @@
       if (result.error) { toast('Import failed: ' + result.error, true); return; }
       if (refreshStatus) refreshStatus();
       toast('Imported: ' + result.added + ' new, ' + result.updated + ' updated, ' + result.skipped + ' skipped');
-      if (result.items && result.items.length) promptImportTags(result.items);
+      var items = result.items || [];
+      var missing = [];
+      if (autoCategoryEnabled() && items.length) {
+        var byKey = {};
+        var all = loadAll();
+        for (var bk = 0; bk < all.length; bk++) byKey[recordItemKey(all[bk])] = all[bk];
+        for (var ik = 0; ik < items.length; ik++) {
+          var stored = byKey[items[ik]];
+          if (stored && !recordCategory(stored)) missing.push(items[ik]);
+        }
+      }
+      function afterImport() {
+        if (items.length) promptImportTags(items);
+      }
+      if (missing.length) promptCategoryItems(missing, 'What is this?', afterImport);
+      else afterImport();
     });
   }
 
@@ -1450,6 +1605,102 @@
   function promptImportTags(itemKeys) {
     var count = (itemKeys || []).length;
     return promptTagItems(itemKeys, 'Tag imported items', count + ' imported listing(s). Optionally tag them:', null);
+  }
+
+  function promptCategoryItems(itemKeys, heading, onDone) {
+    var keys = (itemKeys || []).filter(function (k) { return !!k; });
+    function finish() { if (onDone) onDone(); }
+    if (!keys.length) { finish(); return; }
+    var all = loadAll();
+    var entries = [];
+    for (var i = 0; i < keys.length && entries.length < 60; i++) {
+      for (var j = 0; j < all.length; j++) {
+        if (recordItemKey(all[j]) === keys[i]) { entries.push({ key: keys[i], record: all[j] }); break; }
+      }
+    }
+    if (!entries.length) { finish(); return; }
+    var overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:999999;display:flex;align-items:center;justify-content:center;';
+    var card = document.createElement('div');
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-modal', 'true');
+    card.setAttribute('aria-label', heading || 'What is this?');
+    card.style.cssText = 'background:#fff;color:#222;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,.25);' +
+      'font:12px/1.4 sans-serif;width:360px;max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);overflow:auto;' +
+      'padding:14px;display:flex;flex-direction:column;gap:10px;';
+    var title = document.createElement('strong');
+    title.textContent = heading || 'What is this?';
+    card.appendChild(title);
+    var sub = document.createElement('div');
+    sub.textContent = 'Pick a category so items only compare with similar ones.';
+    sub.style.cssText = 'color:#666;';
+    card.appendChild(sub);
+    function close() {
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    }
+    function categorySelect(record) {
+      var select = document.createElement('select');
+      select.setAttribute('aria-label', 'Category for ' + (record.name || 'item'));
+      select.style.cssText = 'padding:3px 6px;border:1px solid #ccc;border-radius:6px;font-size:12px;';
+      var none = document.createElement('option');
+      none.value = '';
+      none.textContent = 'Uncategorized';
+      select.appendChild(none);
+      for (var c = 0; c < CATEGORIES.length; c++) {
+        var option = document.createElement('option');
+        option.value = CATEGORIES[c];
+        option.textContent = CATEGORIES[c];
+        select.appendChild(option);
+      }
+      var current = recordCategory(record);
+      if (!current) {
+        var inferred = inferCategory(record);
+        if (inferred.category) current = inferred.category;
+      }
+      select.value = current || '';
+      return select;
+    }
+    var selects = [];
+    for (var e = 0; e < entries.length; e++) {
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
+      var label = document.createElement('div');
+      label.textContent = entries[e].record.name || entries[e].key;
+      label.style.cssText = 'font-weight:600;';
+      var select = categorySelect(entries[e].record);
+      selects.push({ key: entries[e].key, select: select });
+      row.appendChild(label);
+      row.appendChild(select);
+      card.appendChild(row);
+    }
+    var actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:2px;';
+    var skip = document.createElement('button');
+    skip.type = 'button';
+    skip.className = 'shoplita-focus';
+    skip.textContent = 'Skip';
+    skip.style.cssText = 'cursor:pointer;font-size:12px;padding:4px 10px;border:1px solid #999;background:#fff;color:#555;border-radius:8px;';
+    skip.addEventListener('click', function () { close(); finish(); });
+    var save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'shoplita-focus';
+    save.textContent = 'Save';
+    save.style.cssText = 'cursor:pointer;font-size:12px;padding:4px 10px;border:1px solid #c94f86;background:#e6659b;color:#fff;border-radius:8px;font-weight:600;';
+    save.addEventListener('click', function () {
+      var updated = 0;
+      for (var s = 0; s < selects.length; s++) {
+        if (setRecordCategory(selects[s].key, selects[s].select.value || null)) updated++;
+      }
+      close();
+      if (refreshStatus) refreshStatus();
+      if (updated) toast('Updated ' + updated + ' categor' + (updated === 1 ? 'y' : 'ies'));
+      finish();
+    });
+    actions.appendChild(skip);
+    actions.appendChild(save);
+    card.appendChild(actions);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
   }
 
   function clearAllSavedInfo() {
@@ -2904,6 +3155,7 @@
       shippingCurrency: p.shippingCurrency || null,
       picks: p.picks || [],
       activePick: p.activePick || null,
+      category: recordCategory(p),
       variants: p.variants || []
     };
   }
@@ -3447,6 +3699,18 @@
 
     wrap.appendChild(title);
     wrap.appendChild(meta);
+    var category = row.category || '';
+    var categoryBtn = document.createElement('button');
+    categoryBtn.type = 'button';
+    categoryBtn.className = 'shoplita-focus';
+    categoryBtn.textContent = category ? 'Category: ' + category : 'What is this?';
+    categoryBtn.setAttribute('aria-label', category ? 'Change category (' + category + ')' : 'Set category');
+    categoryBtn.style.cssText = 'cursor:pointer;margin-top:3px;font-size:11px;padding:1px 8px;border-radius:10px;background:#fff;' +
+      (category ? 'border:1px solid #c94f86;color:#c94f86;' : 'border:1px dashed #999;color:#777;');
+    categoryBtn.addEventListener('click', function () {
+      promptCategoryItems([recordItemKey(row)], 'What is this?', function () { renderSavedPanel(); });
+    });
+    wrap.appendChild(categoryBtn);
     if (names.length) wrap.appendChild(pieces);
     wrap.appendChild(actions);
     return wrap;
@@ -3894,7 +4158,19 @@
   }
 
   var compareEl = null;
-  var compareState = { a: null, b: null, rankBy: 'recent', filterSet: null };
+  var comparedImageKeys = { A: null, B: null };
+  var compareState = { a: null, b: null, rankBy: 'recent', filterSet: null, mode: 'compare' };
+
+  function compatibleCategories(category) {
+    if (!category || category === 'Other') return CATEGORIES.slice();
+    return [category];
+  }
+
+  function categoriesCompatible(a, b) {
+    if (!a || !b || a === 'Other' || b === 'Other') return true;
+    if (a === b) return true;
+    return compatibleCategories(a).indexOf(b) >= 0;
+  }
 
   function variantTypeName(v) {
     var parsed = variantPieces(v);
@@ -4034,22 +4310,63 @@
     return pieces;
   }
 
-  function loadCompareImage(record, img) {
-    if (!record || record.image) return;
+  var warmedImageKeys = {};
+
+  function fetchRecordImage(record) {
+    if (!record || record.image) return null;
     var match = String(record.url || '').match(/\/products\/([^/?#]+)/);
     var handle = record.handle || (match && match[1]);
-    if (!handle) return;
-    fetchJson(recordOrigin(record) + '/products/' + encodeURIComponent(handle) + '.js').then(function (product) {
+    if (!handle) return null;
+    return fetchJson(recordOrigin(record) + '/products/' + encodeURIComponent(handle) + '.js').then(function (product) {
       var image = firstImage(product.featured_image || product.images);
-      if (image) {
-        record.image = image;
-        img.src = image;
-      }
-    }).catch(function () {});
+      if (image) record.image = image;
+      return image || null;
+    }).catch(function () { return null; });
+  }
+
+  function prefetchImage(url) {
+    if (!url || typeof Image !== 'function') return;
+    try { var probe = new Image(); probe.src = url; } catch (e) {}
+  }
+
+  function loadCompareImage(record, img) {
+    if (!record || record.image) return;
+    var pending = fetchRecordImage(record);
+    if (pending) pending.then(function (image) { if (image && img) img.src = image; });
+  }
+
+  function warmRecordImage(record) {
+    if (!record) return;
+    var key = recordItemKey(record);
+    if (warmedImageKeys[key]) return;
+    warmedImageKeys[key] = true;
+    if (record.image) { prefetchImage(record.image); return; }
+    var pending = fetchRecordImage(record);
+    if (pending) pending.then(function (image) { prefetchImage(image); });
+  }
+
+  function preloadNeighborImages(currentRecord, otherKey) {
+    if (!currentRecord) return;
+    var list = compareOrder(compareRecords()).available;
+    if (list.length < 2) return;
+    var index = -1;
+    var key = recordItemKey(currentRecord);
+    for (var i = 0; i < list.length; i++) {
+      if (recordItemKey(list[i]) === key) { index = i; break; }
+    }
+    if (index < 0) return;
+    var count = list.length;
+    var neighborIndexes = [((index - 1) % count + count) % count, (index + 1) % count];
+    for (var n = 0; n < neighborIndexes.length; n++) {
+      var neighbor = list[neighborIndexes[n]];
+      if (neighbor && recordItemKey(neighbor) !== otherKey) warmRecordImage(neighbor);
+    }
   }
 
   function closeCompare() {
     if (compareEl) compareEl.style.display = 'none';
+    comparedImageKeys.A = null;
+    comparedImageKeys.B = null;
   }
 
   function compareRecordKey(side) {
@@ -4098,7 +4415,8 @@
       a: compareRecordKey(compareState.a),
       b: compareRecordKey(compareState.b),
       rank: compareState.rankBy || 'recent',
-      filter: compareState.filterSet || null
+      filter: compareState.filterSet || null,
+      mode: compareState.mode || 'compare'
     });
   }
 
@@ -4106,6 +4424,7 @@
     var keys = loadCompareKeys();
     if (keys.rank) compareState.rankBy = keys.rank;
     if (keys.filter) compareState.filterSet = keys.filter;
+    if (keys.mode === 'combine' || keys.mode === 'compare') compareState.mode = keys.mode;
     if (compareState.a || compareState.b) return;
     if (!keys.a && !keys.b) return;
     var recordA = keys.a ? findSnapshotByKey(keys.a) : null;
@@ -4169,20 +4488,188 @@
     persistCompareState();
   }
 
-  function nextAvailableRecord(currentKey, otherKey) {
+  function stepAvailableRecord(currentKey, otherKey, direction) {
     var order = compareOrder(compareRecords());
     var list = order.available;
-    if (!list.length) return null;
-    var start = 0;
-    for (var i = 0; i < list.length; i++) {
-      if (recordItemKey(list[i]) === currentKey) { start = i + 1; break; }
+    var count = list.length;
+    if (!count) return null;
+    var found = false;
+    var start = direction > 0 ? -1 : count;
+    for (var i = 0; i < count; i++) {
+      if (recordItemKey(list[i]) === currentKey) {
+        start = i;
+        found = true;
+        break;
+      }
     }
-    for (var step = 0; step < list.length; step++) {
-      var candidate = list[(start + step) % list.length];
+    if (!found) start = direction > 0 ? -1 : count;
+    for (var step = 1; step <= count; step++) {
+      var index = ((start + direction * step) % count + count) % count;
+      var candidate = list[index];
       var key = recordItemKey(candidate);
       if (key !== currentKey && key !== otherKey) return candidate;
     }
     return null;
+  }
+
+  function nextAvailableRecord(currentKey, otherKey) {
+    return stepAvailableRecord(currentKey, otherKey, 1);
+  }
+
+  function prevAvailableRecord(currentKey, otherKey) {
+    return stepAvailableRecord(currentKey, otherKey, -1);
+  }
+
+  function duelRankedList() {
+    var pool = compareOrder(compareRecords()).available;
+    var entries = [];
+    for (var i = 0; i < pool.length; i++) {
+      var record = pool[i];
+      entries.push({ key: recordItemKey(record), score: priorityScore(record), savedAt: String(record.savedAt || '') });
+    }
+    entries.sort(function (a, b) {
+      if (a.score !== b.score) return b.score - a.score;
+      if (a.savedAt !== b.savedAt) return a.savedAt > b.savedAt ? -1 : 1;
+      return a.key < b.key ? -1 : (a.key > b.key ? 1 : 0);
+    });
+    var keys = [];
+    for (var j = 0; j < entries.length; j++) keys.push(entries[j].key);
+    return keys;
+  }
+
+  function writePriorityOrder(orderedKeys) {
+    if (!orderedKeys || !orderedKeys.length) return false;
+    var map = loadPriority();
+    var stamp = nextPriorityStamp(map);
+    for (var i = 0; i < orderedKeys.length; i++) map[orderedKeys[i]] = stamp - i;
+    savePriority(map);
+    return true;
+  }
+
+  function applyDuelChoice(winnerKey, loserKey) {
+    if (!winnerKey || !loserKey || winnerKey === loserKey) return false;
+    var ranked = duelRankedList();
+    var winnerIndex = ranked.indexOf(winnerKey);
+    var loserIndex = ranked.indexOf(loserKey);
+    if (winnerIndex < 0 || loserIndex < 0) return null;
+    var changed = winnerIndex > loserIndex;
+    if (changed) {
+      ranked.splice(winnerIndex, 1);
+      ranked.splice(loserIndex, 0, winnerKey);
+    }
+    writePriorityOrder(ranked);
+    return changed;
+  }
+
+  function duelRecordCategory(key) {
+    return key ? recordCategory(findSnapshotByKey(key)) : null;
+  }
+
+  function duelDominantCategory(keys) {
+    var counts = {};
+    var best = null;
+    var bestCount = 0;
+    for (var i = 0; i < keys.length; i++) {
+      var category = duelRecordCategory(keys[i]);
+      if (!category) continue;
+      counts[category] = (counts[category] || 0) + 1;
+      if (counts[category] > bestCount) { bestCount = counts[category]; best = category; }
+    }
+    return best;
+  }
+
+  function suggestDuelPair(currentA, currentB) {
+    var ranked = duelRankedList();
+    var refCategory = duelRecordCategory(currentA) || duelRecordCategory(currentB) || duelDominantCategory(ranked);
+    if (refCategory) {
+      var compatible = [];
+      for (var c = 0; c < ranked.length; c++) {
+        var category = duelRecordCategory(ranked[c]);
+        if (!category || categoriesCompatible(refCategory, category)) compatible.push(ranked[c]);
+      }
+      ranked = compatible;
+    }
+    var count = ranked.length;
+    if (count < 2) return null;
+    var anchor = currentA && !currentB ? currentA : (!currentA && currentB ? currentB : null);
+    var anchorIndex = anchor ? ranked.indexOf(anchor) : -1;
+    for (var attempt = 0; attempt < 80; attempt++) {
+      var i;
+      var j;
+      if (anchorIndex >= 0) {
+        i = anchorIndex;
+        var span = Math.min(3, count - 1);
+        var step = 1 + Math.floor(Math.random() * span);
+        j = i + (Math.random() < 0.5 ? -step : step);
+        if (j < 0) j = -j - 1;
+        if (j >= count) j = 2 * count - 2 - j;
+        if (j < 0 || j >= count || j === i) continue;
+      } else if (count > 2 && Math.random() < 0.7) {
+        i = Math.floor(Math.random() * (count - 1));
+        j = i + 1;
+      } else {
+        i = Math.floor(Math.random() * count);
+        j = Math.floor(Math.random() * count);
+        if (i === j) continue;
+        if (Math.abs(i - j) > Math.max(3, Math.ceil(count / 3))) continue;
+      }
+      var first = ranked[i];
+      var second = ranked[j];
+      if (!first || !second || first === second) continue;
+      if (currentA && currentB) {
+        var samePair = (first === currentA && second === currentB) || (first === currentB && second === currentA);
+        if (samePair && count > 2) continue;
+      }
+      return [first, second];
+    }
+    return null;
+  }
+
+  function setDuelSides(pair) {
+    if (!pair) return false;
+    var recordA = findSnapshotByKey(pair[0]);
+    var recordB = findSnapshotByKey(pair[1]);
+    if (!recordA || !recordB) return false;
+    setCompareSide('A', recordA);
+    setCompareSide('B', recordB);
+    return true;
+  }
+
+  function duelNextPair() {
+    return setDuelSides(suggestDuelPair(compareRecordKey(compareState.a), compareRecordKey(compareState.b)));
+  }
+
+  function duelEnsurePair() {
+    if (compareState.a && compareState.b) return;
+    duelNextPair();
+  }
+
+  function duelAnswer(choice) {
+    var aKey = compareRecordKey(compareState.a);
+    var bKey = compareRecordKey(compareState.b);
+    if (!aKey || !bKey) {
+      duelEnsurePair();
+      if (compareRecordKey(compareState.a) && compareRecordKey(compareState.b)) toast('Paired two listings - pick the one you prefer');
+      else toast('Save at least two listings to rank them', true);
+      renderCompare();
+      return;
+    }
+    if (choice === 'A' || choice === 'B') {
+      var winnerKey = choice === 'A' ? aKey : bKey;
+      var loserKey = choice === 'A' ? bKey : aKey;
+      var changed = applyDuelChoice(winnerKey, loserKey);
+      var winner = findSnapshotByKey(winnerKey);
+      var loser = findSnapshotByKey(loserKey);
+      var winnerName = winner && winner.name ? winner.name : 'A';
+      var loserName = loser && loser.name ? loser.name : 'B';
+      if (changed === null) toast('Only saved, available listings can be ranked');
+      else toast(changed ? 'Ranked "' + winnerName + '" above "' + loserName + '"' : '"' + winnerName + '" is already ranked above "' + loserName + '"');
+      if (refreshStatus) refreshStatus();
+    } else {
+      toast(choice === 'tie' ? 'No preference recorded' : 'Skipped');
+    }
+    duelNextPair();
+    renderCompare();
   }
 
   var comboDocBound = false;
@@ -4360,10 +4847,25 @@
       else selectedKey = recordItemKey(selected);
     }
     var order = compareOrder(records);
+    var otherRecord = label === 'A' ? (compareState.b && compareState.b.record) : (compareState.a && compareState.a.record);
+    var otherCategory = recordCategory(otherRecord);
+    var otherIsSet = !!(otherRecord && (otherRecord.source === 'shoplita.set' || otherRecord.source === 'shoplita.outfit'));
+    var filterByCategory = !!otherCategory && !otherIsSet;
+    var compatibleSet = {};
+    if (filterByCategory) {
+      var compatibleList = compatibleCategories(otherCategory);
+      for (var cf = 0; cf < compatibleList.length; cf++) compatibleSet[compatibleList[cf]] = true;
+    }
+    function allowed(record) {
+      var category = recordCategory(record);
+      if (!category || category === 'Other') return true;
+      return category === otherCategory || !!compatibleSet[category];
+    }
     var groups = [];
     var availableOptions = [];
     for (var i = 0; i < order.available.length; i++) {
       var record = order.available[i];
+      if (filterByCategory && !allowed(record)) continue;
       availableOptions.push({
         value: recordItemKey(record),
         label: record.name + (record.savedAt ? ' (' + String(record.savedAt).slice(0, 10) + ')' : '')
@@ -4373,9 +4875,10 @@
     if (order.blocked.length) {
       var blockedOptions = [];
       for (var b = 0; b < order.blocked.length; b++) {
+        if (filterByCategory && !allowed(order.blocked[b])) continue;
         blockedOptions.push({ value: recordItemKey(order.blocked[b]), label: order.blocked[b].name });
       }
-      groups.push({ label: 'Unavailable ----', options: blockedOptions });
+      if (blockedOptions.length) groups.push({ label: 'Unavailable ----', options: blockedOptions });
     }
     var collections = loadCollections();
     if (collections.length) {
@@ -4483,7 +4986,8 @@
 
   function renderCompareSide(side, label) {
     var col = document.createElement('div');
-    col.style.cssText = 'flex:1 1 280px;min-width:0;display:flex;flex-direction:column;gap:8px;';
+    col.style.cssText = 'flex:1 1 280px;min-width:0;display:flex;flex-direction:column;gap:8px;' +
+      'height:min(760px, calc(100vh - 230px));overflow-y:auto;overflow-x:hidden;';
     if (!side) {
       var empty = document.createElement('div');
       empty.textContent = 'Item ' + label + ': pick a saved item above.';
@@ -4512,6 +5016,11 @@
     } else {
       loadCompareImage(record, img);
     }
+    if (recordItemKey(record) !== comparedImageKeys[label]) {
+      comparedImageKeys[label] = recordItemKey(record);
+      img.className = 'shoplita-anim-image';
+    }
+    preloadNeighborImages(record, compareRecordKey(label === 'A' ? compareState.b : compareState.a));
     col.appendChild(img);
     if (!imageCandidates.length && String(record.source || '').indexOf('aliexpress') === 0) {
       var imageNote = document.createElement('div');
@@ -4650,17 +5159,25 @@
       mark.style.color = nowMarked ? '#2e7d32' : '#555';
       setTimeout(renderCompare, 400);
     });
+    function stepSide(direction) {
+      var other = label === 'A' ? compareState.b : compareState.a;
+      var candidate = direction > 0
+        ? nextAvailableRecord(recordItemKey(record), compareRecordKey(other))
+        : prevAvailableRecord(recordItemKey(record), compareRecordKey(other));
+      if (!candidate) return;
+      setCompareSide(label, candidate);
+      renderCompare();
+    }
+    var viewPrev = document.createElement('button');
+    viewPrev.type = 'button';
+    viewPrev.textContent = 'View previous';
+    viewPrev.style.cssText = 'cursor:pointer;font-size:12px;padding:4px 10px;border:1px solid #777;background:#fff;color:#555;border-radius:12px;';
+    viewPrev.addEventListener('click', function () { stepSide(-1); });
     var viewNext = document.createElement('button');
     viewNext.type = 'button';
     viewNext.textContent = 'View next';
     viewNext.style.cssText = 'cursor:pointer;font-size:12px;padding:4px 10px;border:1px solid #777;background:#fff;color:#555;border-radius:12px;';
-    viewNext.addEventListener('click', function () {
-      var other = label === 'A' ? compareState.b : compareState.a;
-      var candidate = nextAvailableRecord(recordItemKey(record), compareRecordKey(other));
-      if (!candidate) return;
-      setCompareSide(label, candidate);
-      renderCompare();
-    });
+    viewNext.addEventListener('click', function () { stepSide(1); });
     var remove = document.createElement('button');
     remove.type = 'button';
     remove.textContent = 'Remove';
@@ -4677,6 +5194,7 @@
     scoreLabel.style.cssText = 'color:#666;font-size:11px;';
     likeRow.appendChild(like);
     likeRow.appendChild(mark);
+    likeRow.appendChild(viewPrev);
     likeRow.appendChild(viewNext);
     likeRow.appendChild(remove);
     likeRow.appendChild(scoreLabel);
@@ -4726,39 +5244,75 @@
     var records = compareRecords();
 
     var win = document.createElement('div');
+    win.id = 'shoplita-compare-window';
     win.className = 'shoplita-panel';
     win.style.cssText = 'background:#fff;color:#222;border-radius:12px;width:min(1100px,96vw);max-height:92vh;' +
       'display:flex;flex-direction:column;overflow:hidden;font:13px/1.4 sans-serif;box-shadow:0 10px 40px rgba(0,0,0,.4);';
 
     var head = document.createElement('div');
-    head.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid #eee;flex-wrap:wrap;';
-    var heading = document.createElement('strong');
-    heading.textContent = 'Compare';
-    head.appendChild(heading);
-    head.appendChild(makeCompareSelect('A', records, compareState.a && compareState.a.record, function (record) {
+    head.style.cssText = 'border-bottom:1px solid #eee;';
+    var headTop = document.createElement('div');
+    headTop.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 14px;flex-wrap:wrap;';
+    function modeButtonStyle(active) {
+      return 'cursor:pointer;font-size:11px;padding:3px 9px;border:1px solid ' + (active ? '#c94f86' : '#999') +
+        ';border-radius:10px;font-weight:600;background:' + (active ? '#e6659b' : '#fff') + ';color:' + (active ? '#fff' : '#555') + ';';
+    }
+    function makeModeButton(labelText, modeName) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'shoplita-focus';
+      b.textContent = labelText;
+      b.setAttribute('aria-pressed', compareState.mode === modeName ? 'true' : 'false');
+      b.style.cssText = modeButtonStyle(compareState.mode === modeName);
+      b.addEventListener('click', function () {
+        if (compareState.mode === modeName) return;
+        compareState.mode = modeName;
+        persistCompareState();
+        if (modeName === 'compare') duelEnsurePair();
+        renderCompare();
+      });
+      return b;
+    }
+    var modeGroup = document.createElement('span');
+    modeGroup.setAttribute('role', 'group');
+    modeGroup.setAttribute('aria-label', 'Compare window mode');
+    modeGroup.style.cssText = 'display:inline-flex;gap:4px;align-items:center;';
+    modeGroup.appendChild(makeModeButton('Compare', 'compare'));
+    modeGroup.appendChild(makeModeButton('Combine', 'combine'));
+    headTop.appendChild(modeGroup);
+    var headPick = document.createElement('div');
+    headPick.style.cssText = 'display:flex;align-items:center;padding:0 14px 10px;flex-wrap:wrap;';
+    var pickCellA = document.createElement('div');
+    pickCellA.style.cssText = 'flex:1 1 280px;min-width:0;';
+    var pickCellB = document.createElement('div');
+    pickCellB.style.cssText = 'flex:1 1 280px;min-width:0;';
+    pickCellA.appendChild(makeCompareSelect('A', records, compareState.a && compareState.a.record, function (record) {
       setCompareSide('A', record);
       renderCompare();
     }));
-    var vs = document.createElement('span');
-    vs.textContent = 'vs';
-    vs.style.cssText = 'color:#888;';
-    head.appendChild(vs);
-    head.appendChild(makeCompareSelect('B', records, compareState.b && compareState.b.record, function (record) {
+    var pickGap = document.createElement('div');
+    pickGap.style.cssText = 'flex:none;width:12px;';
+    pickCellB.appendChild(makeCompareSelect('B', records, compareState.b && compareState.b.record, function (record) {
       setCompareSide('B', record);
       renderCompare();
     }));
+    headPick.appendChild(pickCellA);
+    headPick.appendChild(pickGap);
+    headPick.appendChild(pickCellB);
+    head.appendChild(headTop);
+    head.appendChild(headPick);
     var rankBtn = document.createElement('button');
     rankBtn.type = 'button';
     rankBtn.className = 'shoplita-focus';
     rankBtn.textContent = 'Rank by: ' + (compareState.rankBy === 'priority' ? 'Priority' : 'Recently added');
     rankBtn.setAttribute('aria-label', 'Toggle picker ranking');
-    rankBtn.style.cssText = 'cursor:pointer;font-size:11px;padding:3px 8px;border:1px solid #999;background:#fff;color:#555;border-radius:10px;';
+    rankBtn.style.cssText = 'cursor:pointer;font-size:11px;padding:3px 8px;border:1px solid #999;background:#fff;color:#555;border-radius:10px;margin-left:auto;';
     rankBtn.addEventListener('click', function () {
       compareState.rankBy = compareState.rankBy === 'priority' ? 'recent' : 'priority';
       persistCompareState();
       renderCompare();
     });
-    head.appendChild(rankBtn);
+    headTop.appendChild(rankBtn);
     var allCollections = loadCollections();
     if (allCollections.length) {
       var setFilter = document.createElement('select');
@@ -4780,15 +5334,15 @@
         persistCompareState();
         renderCompare();
       });
-      head.appendChild(setFilter);
+      headTop.appendChild(setFilter);
     }
     var close = document.createElement('button');
     close.type = 'button';
     close.textContent = '\u00d7';
     close.setAttribute('aria-label', 'Close compare');
-    close.style.cssText = 'margin-left:auto;cursor:pointer;border:none;background:none;font-size:20px;line-height:1;';
+    close.style.cssText = 'cursor:pointer;border:none;background:none;font-size:20px;line-height:1;';
     close.addEventListener('click', closeCompare);
-    head.appendChild(close);
+    headTop.appendChild(close);
 
     var body = document.createElement('div');
     body.style.cssText = 'display:flex;gap:12px;padding:12px 14px;overflow:auto;flex:1;flex-wrap:wrap;';
@@ -4803,36 +5357,60 @@
     var mixedCurrency = !!currencyA && !!currencyB && currencyA !== currencyB;
     var outfitCurrency = mixedCurrency ? '' : currency;
     var foot = document.createElement('div');
-    foot.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;border-top:1px solid #eee;background:#fafafa;';
-    var totalEl = document.createElement('strong');
-    totalEl.setAttribute('aria-live', 'polite');
-    totalEl.style.cssText = 'font-size:15px;';
-    totalEl.textContent = mixedCurrency
-      ? 'Combined total: ' + currencyA + ' ' + totalA.toFixed(2) + ' + ' + currencyB + ' ' + totalB.toFixed(2) + ' (no conversion)'
-      : 'Combined total: ' + (currency ? currency + ' ' : '') + (Math.round((totalA + totalB) * 100) / 100).toFixed(2);
+    foot.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;border-top:1px solid #eee;background:#fafafa;flex-wrap:wrap;';
     var parts = document.createElement('span');
     parts.style.cssText = 'color:#666;';
     parts.textContent = 'A ' + totalA.toFixed(2) + ' + B ' + totalB.toFixed(2);
-    var saveOutfitBtn = document.createElement('button');
-    saveOutfitBtn.type = 'button';
-    saveOutfitBtn.textContent = 'Save outfit';
-    saveOutfitBtn.style.cssText = 'cursor:pointer;font-size:12px;padding:4px 10px;border:1px solid #c94f86;background:#e6659b;color:#fff;border-radius:8px;font-weight:600;';
-    saveOutfitBtn.addEventListener('click', function () {
-      var pieces = collectComparePieces();
-      if (!pieces.length) { toast('Nothing selected to save', true); return; }
-      var name = window.prompt('Outfit name', 'Outfit ' + new Date().toISOString().slice(0, 10));
-      if (!name) return;
-      var outfit = createOutfit(name, pieces, outfitCurrency);
-      if (!outfit) { toast('Could not save outfit', true); return; }
-      if (savedPanelEl && savedPanelEl.style.display !== 'none') renderOutfitsBar();
-      toast('Saved outfit "' + outfit.name + '" (' + pieces.length + ' pieces, ' + outfit.total.toFixed(2) + ')');
-    });
-    var footRight = document.createElement('div');
-    footRight.style.cssText = 'display:flex;align-items:center;gap:10px;';
-    footRight.appendChild(parts);
-    footRight.appendChild(saveOutfitBtn);
-    foot.appendChild(totalEl);
-    foot.appendChild(footRight);
+    if (compareState.mode === 'combine') {
+      var totalEl = document.createElement('strong');
+      totalEl.setAttribute('aria-live', 'polite');
+      totalEl.style.cssText = 'font-size:15px;';
+      totalEl.textContent = mixedCurrency
+        ? 'Combined total: ' + currencyA + ' ' + totalA.toFixed(2) + ' + ' + currencyB + ' ' + totalB.toFixed(2) + ' (no conversion)'
+        : 'Combined total: ' + (currency ? currency + ' ' : '') + (Math.round((totalA + totalB) * 100) / 100).toFixed(2);
+      var saveOutfitBtn = document.createElement('button');
+      saveOutfitBtn.type = 'button';
+      saveOutfitBtn.textContent = 'Save outfit';
+      saveOutfitBtn.style.cssText = 'cursor:pointer;font-size:12px;padding:4px 10px;border:1px solid #c94f86;background:#e6659b;color:#fff;border-radius:8px;font-weight:600;';
+      saveOutfitBtn.addEventListener('click', function () {
+        var pieces = collectComparePieces();
+        if (!pieces.length) { toast('Nothing selected to save', true); return; }
+        var name = window.prompt('Outfit name', 'Outfit ' + new Date().toISOString().slice(0, 10));
+        if (!name) return;
+        var outfit = createOutfit(name, pieces, outfitCurrency);
+        if (!outfit) { toast('Could not save outfit', true); return; }
+        if (savedPanelEl && savedPanelEl.style.display !== 'none') renderOutfitsBar();
+        toast('Saved outfit "' + outfit.name + '" (' + pieces.length + ' pieces, ' + outfit.total.toFixed(2) + ')');
+      });
+      var combineRight = document.createElement('div');
+      combineRight.style.cssText = 'display:flex;align-items:center;gap:10px;';
+      combineRight.appendChild(parts);
+      combineRight.appendChild(saveOutfitBtn);
+      foot.appendChild(totalEl);
+      foot.appendChild(combineRight);
+    } else {
+      function duelButton(labelText, choice) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'shoplita-focus';
+        b.textContent = labelText;
+        b.style.cssText = 'cursor:pointer;font-size:12px;padding:4px 10px;border:1px solid #777;background:#fff;color:#555;border-radius:12px;';
+        b.addEventListener('click', function () { duelAnswer(choice); });
+        return b;
+      }
+      var duelRight = document.createElement('div');
+      duelRight.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
+      var prompt = document.createElement('span');
+      prompt.textContent = 'Which do you prefer?';
+      prompt.style.cssText = 'color:#666;font-size:12px;font-weight:600;';
+      duelRight.appendChild(prompt);
+      duelRight.appendChild(duelButton('Prefer A', 'A'));
+      duelRight.appendChild(duelButton('Prefer B', 'B'));
+      duelRight.appendChild(duelButton('Tie', 'tie'));
+      duelRight.appendChild(duelButton('Skip', 'skip'));
+      foot.appendChild(parts);
+      foot.appendChild(duelRight);
+    }
 
     win.appendChild(head);
     win.appendChild(body);
@@ -4937,11 +5515,29 @@
       style.textContent =
         '@keyframes shoplita-pop { 0% { transform: scale(1); } 40% { transform: scale(1.14); } 100% { transform: scale(1); } }' +
         '@keyframes shoplita-like { 0% { transform: scale(1); } 35% { transform: scale(1.25); } 100% { transform: scale(1); } }' +
+        '@keyframes shoplita-open { 0% { opacity: 0; transform: translateY(10px) scale(.97); } 100% { opacity: 1; transform: none; } }' +
+        '@keyframes shoplita-close { 0% { opacity: 1; transform: none; } 100% { opacity: 0; transform: translateY(8px) scale(.98); } }' +
+        '@keyframes shoplita-btn-in { 0% { opacity: 0; transform: translateY(16px); } 100% { opacity: 1; transform: none; } }' +
+        '@keyframes shoplita-btn-out { 0% { opacity: 1; transform: none; } 100% { opacity: 0; transform: translateY(16px); } }' +
+        '@keyframes shoplita-mini-pop { 0% { opacity: 0; transform: scale(.3); } 60% { transform: scale(1.15); } 100% { opacity: 1; transform: scale(1); } }' +
+        '@keyframes shoplita-img-in { 0% { opacity: 0; transform: translateY(-12px); } 100% { opacity: 1; transform: none; } }' +
         '.shoplita-anim-save { animation: shoplita-pop .35s ease; }' +
         '.shoplita-anim-like { animation: shoplita-like .45s ease; }' +
+        '.shoplita-anim-open { animation: shoplita-open .22s ease both; }' +
+        '.shoplita-anim-close { animation: shoplita-close .22s ease both; }' +
+        '.shoplita-anim-open > * { animation: shoplita-btn-in .24s cubic-bezier(.2,.8,.3,1) both; }' +
+        '.shoplita-anim-open > *:nth-child(2) { animation-delay: .04s; }' +
+        '.shoplita-anim-open > *:nth-child(3) { animation-delay: .08s; }' +
+        '.shoplita-anim-open > *:nth-child(4) { animation-delay: .12s; }' +
+        '.shoplita-anim-close > * { animation: shoplita-btn-out .13s ease both; }' +
+        '.shoplita-anim-close > *:nth-child(2) { animation-delay: .03s; }' +
+        '.shoplita-anim-close > *:nth-child(3) { animation-delay: .06s; }' +
+        '.shoplita-anim-close > *:nth-child(4) { animation-delay: .09s; }' +
+        '.shoplita-anim-mini { animation: shoplita-mini-pop .3s ease both; }' +
+        '.shoplita-anim-image { animation: shoplita-img-in .32s ease both; }' +
         '.shoplita-focus:focus-visible { outline: 2px solid #c94f86; outline-offset: 2px; }' +
         '.shoplita-panel button:focus-visible, .shoplita-panel a:focus-visible, .shoplita-panel input:focus-visible, .shoplita-panel select:focus-visible { outline: 2px solid #c94f86; outline-offset: 2px; }' +
-        '@media (prefers-reduced-motion: reduce) { .shoplita-anim-save, .shoplita-anim-like { animation: none; } }';
+        '@media (prefers-reduced-motion: reduce) { .shoplita-anim-save, .shoplita-anim-like, .shoplita-anim-open, .shoplita-anim-close, .shoplita-anim-mini, .shoplita-anim-image, .shoplita-anim-open > *, .shoplita-anim-close > * { animation: none; } }';
       (document.head || document.documentElement || document.body).appendChild(style);
     } catch (e) {}
   }
@@ -4951,6 +5547,39 @@
     el.classList.remove(className);
     void el.offsetWidth;
     el.classList.add(className);
+  }
+
+  function reducedMotion() {
+    try {
+      return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function viewportSize() {
+    var width = window.innerWidth || (document.documentElement && document.documentElement.clientWidth) || 0;
+    var height = window.innerHeight || (document.documentElement && document.documentElement.clientHeight) || 0;
+    return { width: width || 1280, height: height || 800 };
+  }
+
+  function addWindowListener(type, handler) {
+    if (window && typeof window.addEventListener === 'function') window.addEventListener(type, handler, false);
+  }
+
+  var MINI_BUTTON_SIZE = 42;
+  var MINI_BUTTON_PAD = 8;
+
+  function clampMiniPos(x, y) {
+    var view = viewportSize();
+    var maxX = Math.max(MINI_BUTTON_PAD, view.width - MINI_BUTTON_SIZE - MINI_BUTTON_PAD);
+    var maxY = Math.max(MINI_BUTTON_PAD, view.height - MINI_BUTTON_SIZE - MINI_BUTTON_PAD);
+    var safeX = typeof x === 'number' && isFinite(x) ? x : maxX;
+    var safeY = typeof y === 'number' && isFinite(y) ? y : maxY;
+    return {
+      x: Math.min(Math.max(safeX, MINI_BUTTON_PAD), maxX),
+      y: Math.min(Math.max(safeY, MINI_BUTTON_PAD), maxY)
+    };
   }
 
   var refreshStatus = null;
@@ -5053,20 +5682,160 @@
     miniBtn.textContent = '+';
     miniBtn.className = 'shoplita-focus';
     miniBtn.setAttribute('aria-label', 'Show Shoplita tools');
-    miniBtn.setAttribute('title', 'Show Shoplita tools');
-    miniBtn.style.cssText = 'display:none;position:fixed;right:16px;bottom:16px;z-index:999999;width:42px;height:42px;' +
+    miniBtn.setAttribute('title', 'Show Shoplita tools (drag to move)');
+    miniBtn.style.cssText = 'display:none;position:fixed;left:auto;top:auto;right:16px;bottom:16px;z-index:999999;width:42px;height:42px;' +
       'border-radius:50%;border:1px solid #c94f86;background:#e6659b;color:#fff;font-size:20px;font-weight:700;' +
-      'cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.3);align-items:center;justify-content:center;';
+      'cursor:grab;box-shadow:0 2px 8px rgba(0,0,0,.3);align-items:center;justify-content:center;';
 
-    function setMinimized(minimized) {
-      panel.style.display = minimized ? 'none' : 'flex';
-      miniBtn.style.display = minimized ? 'flex' : 'none';
+    function saveMiniPos(x, y) {
+      var ui = loadUi();
+      ui.miniPos = { x: Math.round(x), y: Math.round(y) };
+      saveUi(ui);
+    }
+
+    function readMiniPos() {
+      var saved = loadUi().miniPos;
+      var view = viewportSize();
+      var x = saved && typeof saved.x === 'number' ? saved.x : view.width - MINI_BUTTON_SIZE - 16;
+      var y = saved && typeof saved.y === 'number' ? saved.y : view.height - MINI_BUTTON_SIZE - 16;
+      return clampMiniPos(x, y);
+    }
+
+    function applyMiniPos() {
+      var pos = readMiniPos();
+      miniBtn.style.left = Math.round(pos.x) + 'px';
+      miniBtn.style.top = Math.round(pos.y) + 'px';
+      miniBtn.style.right = 'auto';
+      miniBtn.style.bottom = 'auto';
+      return pos;
+    }
+
+    function anchorPanelToMini() {
+      var pos = readMiniPos();
+      var view = viewportSize();
+      var rect = panel.getBoundingClientRect ? panel.getBoundingClientRect() : null;
+      var panelWidth = panel.offsetWidth || (rect && rect.width) || 300;
+      var panelHeight = panel.offsetHeight || (rect && rect.height) || 240;
+      var growsLeft = pos.x + MINI_BUTTON_SIZE / 2 > view.width / 2;
+      var growsUp = pos.y + MINI_BUTTON_SIZE / 2 > view.height / 2;
+      var left = growsLeft ? pos.x + MINI_BUTTON_SIZE - panelWidth : pos.x;
+      var top = growsUp ? pos.y + MINI_BUTTON_SIZE - panelHeight : pos.y;
+      left = Math.min(Math.max(left, MINI_BUTTON_PAD), Math.max(MINI_BUTTON_PAD, view.width - panelWidth - MINI_BUTTON_PAD));
+      top = Math.min(Math.max(top, MINI_BUTTON_PAD), Math.max(MINI_BUTTON_PAD, view.height - panelHeight - MINI_BUTTON_PAD));
+      panel.style.left = Math.round(left) + 'px';
+      panel.style.top = Math.round(top) + 'px';
+      panel.style.right = 'auto';
+      panel.style.bottom = 'auto';
+    }
+
+    var uiAnimTimer = null;
+    function setMinimized(minimized, instant) {
       var ui = loadUi();
       ui.minimized = !!minimized;
       saveUi(ui);
+      if (uiAnimTimer) { clearTimeout(uiAnimTimer); uiAnimTimer = null; }
+      var animated = !instant && !reducedMotion();
+      if (minimized) {
+        panel.classList.remove('shoplita-anim-open');
+        if (!animated || panel.style.display === 'none') {
+          panel.classList.remove('shoplita-anim-close');
+          panel.style.display = 'none';
+          miniBtn.style.display = 'flex';
+          return;
+        }
+        panel.classList.add('shoplita-anim-close');
+        uiAnimTimer = setTimeout(function () {
+          uiAnimTimer = null;
+          panel.classList.remove('shoplita-anim-close');
+          panel.style.display = 'none';
+          miniBtn.style.display = 'flex';
+          animate(miniBtn, 'shoplita-anim-mini');
+        }, 230);
+        return;
+      }
+      panel.classList.remove('shoplita-anim-close');
+      miniBtn.style.display = 'none';
+      panel.style.display = 'flex';
+      anchorPanelToMini();
+      void panel.offsetWidth;
+      panel.classList.add('shoplita-anim-open');
+      uiAnimTimer = setTimeout(function () {
+        uiAnimTimer = null;
+        panel.classList.remove('shoplita-anim-open');
+      }, 420);
     }
     minBtn.addEventListener('click', function () { setMinimized(true); });
-    miniBtn.addEventListener('click', function () { setMinimized(false); });
+
+    var miniDrag = null;
+    var suppressMiniClick = false;
+
+    function miniPointer(event) {
+      var touch = (event.touches && event.touches[0]) || (event.changedTouches && event.changedTouches[0]);
+      return touch ? { x: touch.clientX, y: touch.clientY } : { x: event.clientX, y: event.clientY };
+    }
+
+    function removeMiniDragListeners() {
+      document.removeEventListener('mousemove', onMiniDragMove, false);
+      document.removeEventListener('mouseup', onMiniDragEnd, false);
+      document.removeEventListener('touchmove', onMiniDragMove, false);
+      document.removeEventListener('touchend', onMiniDragEnd, false);
+      document.removeEventListener('touchcancel', onMiniDragEnd, false);
+    }
+
+    function onMiniDragStart(event) {
+      if (event && event.type === 'mousedown' && event.button != null && event.button !== 0) return;
+      var point = miniPointer(event);
+      var rect = miniBtn.getBoundingClientRect ? miniBtn.getBoundingClientRect() : null;
+      var baseX = rect && rect.left ? rect.left : (parseFloat(miniBtn.style.left) || 0);
+      var baseY = rect && rect.top ? rect.top : (parseFloat(miniBtn.style.top) || 0);
+      miniDrag = { originX: point.x, originY: point.y, baseX: baseX, baseY: baseY, moved: false };
+      suppressMiniClick = false;
+      document.addEventListener('mousemove', onMiniDragMove, false);
+      document.addEventListener('mouseup', onMiniDragEnd, false);
+      document.addEventListener('touchmove', onMiniDragMove, { passive: false });
+      document.addEventListener('touchend', onMiniDragEnd, false);
+      document.addEventListener('touchcancel', onMiniDragEnd, false);
+    }
+
+    function onMiniDragMove(event) {
+      if (!miniDrag) return;
+      var point = miniPointer(event);
+      var dx = point.x - miniDrag.originX;
+      var dy = point.y - miniDrag.originY;
+      if (!miniDrag.moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+      miniDrag.moved = true;
+      if (event && event.cancelable) event.preventDefault();
+      var next = clampMiniPos(miniDrag.baseX + dx, miniDrag.baseY + dy);
+      miniBtn.style.left = Math.round(next.x) + 'px';
+      miniBtn.style.top = Math.round(next.y) + 'px';
+      miniBtn.style.cursor = 'grabbing';
+    }
+
+    function onMiniDragEnd() {
+      if (!miniDrag) return;
+      var moved = miniDrag.moved;
+      miniDrag = null;
+      miniBtn.style.cursor = '';
+      removeMiniDragListeners();
+      if (!moved) return;
+      suppressMiniClick = true;
+      saveMiniPos(parseFloat(miniBtn.style.left) || 0, parseFloat(miniBtn.style.top) || 0);
+    }
+
+    miniBtn.addEventListener('mousedown', onMiniDragStart, false);
+    miniBtn.addEventListener('touchstart', onMiniDragStart, false);
+    miniBtn.addEventListener('click', function (event) {
+      if (suppressMiniClick) {
+        suppressMiniClick = false;
+        if (event && event.preventDefault) event.preventDefault();
+        return;
+      }
+      setMinimized(false);
+    });
+    addWindowListener('resize', function () {
+      applyMiniPos();
+      if (panel.style.display !== 'none') anchorPanelToMini();
+    });
 
     refreshStatus = function () {
       var all = loadAll();
@@ -5142,7 +5911,9 @@
     panel.appendChild(statusRow);
     document.body.appendChild(panel);
     document.body.appendChild(miniBtn);
-    if (loadUi().minimized) setMinimized(true);
+    applyMiniPos();
+    anchorPanelToMini();
+    if (loadUi().minimized) setMinimized(true, true);
     refreshStatus();
     updateDebugAttribute();
 
@@ -5395,6 +6166,8 @@
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
       classify: classify,
+      inferCategory: inferCategory,
+      categoryFromText: categoryFromText,
       normalize: normalize,
       currentHandle: currentHandle,
       currentPageId: currentPageId,
@@ -5473,6 +6246,21 @@
       collectImages: collectImages,
       compareOrder: compareOrder,
       nextAvailableRecord: nextAvailableRecord,
+      prevAvailableRecord: prevAvailableRecord,
+      stepAvailableRecord: stepAvailableRecord,
+      duelRankedList: duelRankedList,
+      writePriorityOrder: writePriorityOrder,
+      applyDuelChoice: applyDuelChoice,
+      suggestDuelPair: suggestDuelPair,
+      duelNextPair: duelNextPair,
+      duelEnsurePair: duelEnsurePair,
+      duelAnswer: duelAnswer,
+      preloadNeighborImages: preloadNeighborImages,
+      warmRecordImage: warmRecordImage,
+      setCompareSide: setCompareSide,
+      openComparePanel: openComparePanel,
+      closeCompare: closeCompare,
+      clampMiniPos: clampMiniPos,
       loadCompareKeys: loadCompareKeys,
       persistCompareState: persistCompareState,
       restoreCompareState: restoreCompareState,
