@@ -3,7 +3,7 @@
 // @namespace    shoplita
 // @updateURL    https://github.com/PipettingBeaver/Shoplita/raw/refs/heads/main/Shoplita.user.js
 // @downloadURL  https://github.com/PipettingBeaver/Shoplita/raw/refs/heads/main/Shoplita.user.js
-// @version      2.21.0
+// @version      2.22.0
 // @description  Saves prices and pieces from lolita shops (42Lolita, Devilinspired, My-Lolita-Dress, AliExpress, Amazon and other pages) into one wishlist. Keeps dated snapshots, computes coordinated set totals, ranks favourites, marks availability, organizes items into named tags and saves mix-and-match outfits, exports/imports JSON, TSV, Excel-ready CSV and Shoplita share files, and compares items, sets and outfits with searchable pickers, images and live totals in a minimizable panel.
 // @author       tan
 // @match        https://42lolita.com/*
@@ -4159,7 +4159,7 @@
 
   var compareEl = null;
   var comparedImageKeys = { A: null, B: null };
-  var compareState = { a: null, b: null, rankBy: 'recent', filterSet: null, mode: 'compare' };
+  var compareState = { a: null, b: null, rankBy: 'recent', filterSet: null, filterCategory: null, mode: 'compare' };
 
   function compatibleCategories(category) {
     if (!category || category === 'Other') return CATEGORIES.slice();
@@ -4416,6 +4416,7 @@
       b: compareRecordKey(compareState.b),
       rank: compareState.rankBy || 'recent',
       filter: compareState.filterSet || null,
+      type: compareState.filterCategory || null,
       mode: compareState.mode || 'compare'
     });
   }
@@ -4424,6 +4425,7 @@
     var keys = loadCompareKeys();
     if (keys.rank) compareState.rankBy = keys.rank;
     if (keys.filter) compareState.filterSet = keys.filter;
+    if (keys.type && isKnownCategory(keys.type)) compareState.filterCategory = keys.type;
     if (keys.mode === 'combine' || keys.mode === 'compare') compareState.mode = keys.mode;
     if (compareState.a || compareState.b) return;
     if (!keys.a && !keys.b) return;
@@ -4435,6 +4437,13 @@
 
   function compareRecords() {
     var records = latestSnapshots(loadAll());
+    if (compareState.filterCategory) {
+      var kept = [];
+      for (var q = 0; q < records.length; q++) {
+        if (recordCategory(records[q]) === compareState.filterCategory) kept.push(records[q]);
+      }
+      records = kept;
+    }
     if (!compareState.filterSet) return records;
     var collection = findCollection(compareState.filterSet);
     if (!collection || !Array.isArray(collection.items)) return records;
@@ -4445,6 +4454,40 @@
       if (allowed[recordItemKey(records[j])]) out.push(records[j]);
     }
     return out;
+  }
+
+  function cycleCompareToType(type) {
+    if (!type) return;
+    var order = compareOrder(compareRecords());
+    var pool = order.available.length ? order.available : order.blocked;
+    if (!pool.length) {
+      setCompareSide('A', null);
+      setCompareSide('B', null);
+      return;
+    }
+    var aKey = compareRecordKey(compareState.a);
+    var bKey = compareRecordKey(compareState.b);
+    var aMatch = null;
+    for (var i = 0; i < pool.length; i++) {
+      if (recordItemKey(pool[i]) === aKey) { aMatch = pool[i]; break; }
+    }
+    var aSelect = aMatch || pool[0];
+    if (!aMatch) setCompareSide('A', aSelect);
+    var aSelectKey = recordItemKey(aSelect);
+    if (pool.length < 2) {
+      setCompareSide('B', null);
+      return;
+    }
+    for (var j = 0; j < pool.length; j++) {
+      var bCandidateKey = recordItemKey(pool[j]);
+      if (bCandidateKey === bKey && bCandidateKey !== aSelectKey) return;
+    }
+    var bSelect = null;
+    for (var k = 0; k < pool.length; k++) {
+      if (recordItemKey(pool[k]) === aSelectKey) { bSelect = pool[(k + 1) % pool.length]; break; }
+    }
+    if (bSelect && recordItemKey(bSelect) === aSelectKey) bSelect = null;
+    setCompareSide('B', bSelect);
   }
 
   function compareAddByHandle(key) {
@@ -5097,6 +5140,19 @@
       });
       sourceRow.appendChild(addTag);
 
+      var categoryName = recordCategory(record) || '';
+      var catChip = document.createElement('button');
+      catChip.type = 'button';
+      catChip.className = 'shoplita-focus';
+      catChip.textContent = categoryName ? 'Category: ' + categoryName : 'What is this?';
+      catChip.setAttribute('aria-label', categoryName ? 'Change category (' + categoryName + ')' : 'Set category');
+      catChip.style.cssText = 'cursor:pointer;font-size:11px;padding:1px 8px;border-radius:10px;background:#fff;' +
+        (categoryName ? 'border:1px solid #c94f86;color:#c94f86;' : 'border:1px dashed #999;color:#777;');
+      catChip.addEventListener('click', function () {
+        promptCategoryItems([recordItemKey(record)], 'What is this?', renderCompare);
+      });
+      sourceRow.appendChild(catChip);
+
       col.appendChild(sourceRow);
     }
     var range = variantPriceRange(record);
@@ -5335,6 +5391,36 @@
         renderCompare();
       });
       headTop.appendChild(setFilter);
+    }
+    var allSnapshots = latestSnapshots(loadAll());
+    var typeOptions = [];
+    var typeSeen = {};
+    for (var tq = 0; tq < allSnapshots.length; tq++) {
+      var typeName = recordCategory(allSnapshots[tq]);
+      if (typeName && !typeSeen[typeName]) { typeSeen[typeName] = true; typeOptions.push(typeName); }
+    }
+    if (typeOptions.length) {
+      var typeFilter = document.createElement('select');
+      typeFilter.setAttribute('aria-label', 'Filter by type');
+      typeFilter.style.cssText = 'max-width:180px;padding:3px 6px;border:1px solid #ccc;border-radius:6px;font-size:12px;';
+      var allTypesOption = document.createElement('option');
+      allTypesOption.value = '';
+      allTypesOption.textContent = 'All types';
+      typeFilter.appendChild(allTypesOption);
+      for (var tt = 0; tt < typeOptions.length; tt++) {
+        var typeChoice = document.createElement('option');
+        typeChoice.value = typeOptions[tt];
+        typeChoice.textContent = 'Type: ' + typeOptions[tt];
+        typeFilter.appendChild(typeChoice);
+      }
+      typeFilter.value = compareState.filterCategory || '';
+      typeFilter.addEventListener('change', function () {
+        compareState.filterCategory = typeFilter.value || null;
+        cycleCompareToType(compareState.filterCategory);
+        persistCompareState();
+        renderCompare();
+      });
+      headTop.appendChild(typeFilter);
     }
     var close = document.createElement('button');
     close.type = 'button';
