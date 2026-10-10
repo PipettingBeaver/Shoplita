@@ -9,6 +9,8 @@ favourites, tracks availability, groups items into named sets, saves
 mix-and-match outfits, and compares items, sets, and outfits in a minimizable
 panel.
 
+Made for use by friends, currently not fully tested, didn't fully audit the code, just did QA for import/export. Open to fixing if anyone finds issues.
+
 ## Install
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) (or another userscript manager).
